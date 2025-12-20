@@ -10,14 +10,20 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"runtime"
 
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	terminal "github.com/phroun/purfecterm/gtk"
 )
 
 func main() {
+	// Lock main thread for GTK (required on macOS)
+	runtime.LockOSThread()
+
 	gtk.Init(&os.Args)
 
 	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
@@ -26,7 +32,6 @@ func main() {
 	}
 	win.SetTitle("PurfecTerm GTK Example")
 	win.SetDefaultSize(800, 600)
-	win.Connect("destroy", gtk.MainQuit)
 
 	// Create the terminal widget
 	term, err := terminal.New(terminal.Options{
@@ -42,13 +47,27 @@ func main() {
 
 	// Add to window
 	win.Add(term.Widget())
+
+	// Handle window close
+	win.Connect("destroy", func() {
+		term.Close()
+		gtk.MainQuit()
+	})
+
 	win.ShowAll()
 
-	// Start the shell
-	err = term.RunShell()
-	if err != nil {
-		log.Fatal("Failed to start shell:", err)
-	}
+	// Start the shell AFTER ShowAll to ensure widget is realized
+	glib.IdleAdd(func() bool {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		err := term.RunShell()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
+		}
+		return false // Don't repeat
+	})
 
 	gtk.Main()
 }

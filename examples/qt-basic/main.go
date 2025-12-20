@@ -10,15 +10,19 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/mappu/miqt/qt"
 	terminal "github.com/phroun/purfecterm/qt"
 )
 
 func main() {
-	qt.NewQApplication(os.Args)
+	// Lock main thread for Qt
+	runtime.LockOSThread()
+
+	app := qt.NewQApplication(os.Args)
 
 	win := qt.NewQMainWindow(nil)
 	win.SetWindowTitle("PurfecTerm Qt Example")
@@ -33,18 +37,29 @@ func main() {
 		FontSize:       12,
 	})
 	if err != nil {
-		log.Fatal("Unable to create terminal:", err)
+		fmt.Fprintf(os.Stderr, "Unable to create terminal: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Add to window
 	win.SetCentralWidget(term.Widget())
+
+	// Handle window close
+	win.OnCloseEvent(func(event *qt.QCloseEvent) {
+		term.Close()
+		event.Accept()
+	})
+
 	win.Show()
 
-	// Start the shell
-	err = term.RunShell()
-	if err != nil {
-		log.Fatal("Failed to start shell:", err)
-	}
+	// Start the shell after showing window
+	// Use a single-shot timer to defer until event loop is running
+	qt.QTimer_SingleShot(0, func() {
+		err := term.RunShell()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
+		}
+	})
 
-	qt.QApplication_Exec()
+	app.Exec()
 }
