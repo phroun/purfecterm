@@ -242,7 +242,7 @@ func (t *Terminal) GetSize() (cols, rows int) {
 
 // GetTerminalCapabilities returns the terminal capabilities for this terminal.
 // The returned pointer is automatically updated when the terminal resizes.
-func (t *Terminal) GetTerminalCapabilities() *pawscript.TerminalCapabilities {
+func (t *Terminal) GetTerminalCapabilities() *purfecterm.TerminalCapabilities {
 	return t.widget.GetTerminalCapabilities()
 }
 

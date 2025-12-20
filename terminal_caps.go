@@ -2,7 +2,9 @@ package purfecterm
 
 import "sync"
 
-// TerminalCapabilities holds terminal capabilities that can be associated with a channel
+// TerminalCapabilities holds terminal capabilities that can be associated with a channel.
+// This allows different channels (e.g., system stdout vs gui_console) to report
+// their own capabilities independently.
 type TerminalCapabilities struct {
 	mu sync.RWMutex
 
@@ -43,4 +45,19 @@ func NewTerminalCapabilities() *TerminalCapabilities {
 		LineMode:      true,
 		Metadata:      make(map[string]interface{}),
 	}
+}
+
+// SetSize updates the terminal dimensions
+func (tc *TerminalCapabilities) SetSize(width, height int) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.Width = width
+	tc.Height = height
+}
+
+// GetSize returns the terminal dimensions
+func (tc *TerminalCapabilities) GetSize() (width, height int) {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.Width, tc.Height
 }

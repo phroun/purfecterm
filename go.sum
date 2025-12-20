@@ -1,10 +1,4 @@
-github.com/gotk3/gotk3 v0.6.4 h1:5ur/PRr86PwCG8eSj98D1eXvhrNNK6GILS2zq779dCg=
-github.com/gotk3/gotk3 v0.6.4/go.mod h1:/hqFpkNa9T3JgNAE2fLvCdov7c5bw//FHNZrZ3Uv9/Q=
+github.com/gotk3/gotk3 v0.6.4-0.20240618185848-ff349ae13f56 h1:QsNP/tj2zL7zUp1f0OCmoMLNKRJo8qK49+PJo/5kSbg=
+github.com/gotk3/gotk3 v0.6.4-0.20240618185848-ff349ae13f56/go.mod h1:/hqFpkNa9T3JgNAE2fLvCdov7c5bw//FHNZrZ3Uv9/Q=
 github.com/mappu/miqt v0.12.0 h1:bBMBDeACmV8TbdLfoN51la7kF6QT3sNAcG+ZdRDgmxU=
 github.com/mappu/miqt v0.12.0/go.mod h1:xFg7ADaO1QSkmXPsPODoKe/bydJpRG9fgCYyIDl/h1U=
-github.com/phroun/pawscript v0.2.9-alpha-r3 h1:n8gBO3KmtJRlUrsX0MiEBmNsK3Yz2px38208/wVDtSU=
-github.com/phroun/pawscript v0.2.9-alpha-r3/go.mod h1:HrX9YJOxfwG8Q6NXjxsDmDmfQPsIrkrOcK1ps94h87s=
-golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
-golang.org/x/sys v0.38.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
-golang.org/x/term v0.37.0 h1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU=
-golang.org/x/term v0.37.0/go.mod h1:5pB4lxRNYYVZuTLmy8oR2BH8dflOR+IbTYFD8fi3254=

@@ -8,8 +8,7 @@ import (
 	"sync"
 
 	"github.com/mappu/miqt/qt"
-	"github.com/phroun/pawscript/src"
-	"github.com/phroun/pawscript/src/pkg/purfecterm"
+	"github.com/phroun/purfecterm"
 )
 
 // Left padding for terminal content (pixels)
@@ -198,7 +197,7 @@ type Widget struct {
 
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
-	termCaps *pawscript.TerminalCapabilities
+	termCaps *purfecterm.TerminalCapabilities
 }
 
 // NewWidget creates a new terminal widget with the specified dimensions
@@ -220,7 +219,7 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 	w.parser = purfecterm.NewParser(w.buffer)
 
 	// Initialize terminal capabilities (auto-updated on resize)
-	w.termCaps = &pawscript.TerminalCapabilities{
+	w.termCaps = &purfecterm.TerminalCapabilities{
 		TermType:      "gui-console",
 		IsTerminal:    true,
 		SupportsANSI:  true,
@@ -2992,7 +2991,7 @@ func (w *Widget) GetSize() (cols, rows int) {
 // The returned pointer is automatically updated when the terminal resizes.
 // Use this when creating PawScript IO channels to enable io::cursor and
 // other terminal queries to return correct dimensions.
-func (w *Widget) GetTerminalCapabilities() *pawscript.TerminalCapabilities {
+func (w *Widget) GetTerminalCapabilities() *purfecterm.TerminalCapabilities {
 	return w.termCaps
 }
 
