@@ -1,4 +1,0 @@
-a: "b: c"
-${ret ~a}
-echo ~b
-echo "d", $(~b)

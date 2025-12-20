@@ -1,3 +1,0 @@
-# Quote mismatch
-echo "Starting with double quote but ending here'
-echo "This line may not be reached"

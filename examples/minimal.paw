@@ -1,5 +1,0 @@
-# This is a comment
-
-write "Who are you? "
-name: {read}
-echo "Hello, {set_result ~name}"

@@ -1,3 +1,0 @@
-# This WILL trigger: "Unclosed quote: missing closing '"
-echo "This quote is never closed
-echo "This line won't be reached due to parse error"

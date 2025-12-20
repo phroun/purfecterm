@@ -1,5 +1,0 @@
-include "my.inc.paw"
-
-print ~x
-
-dumb
