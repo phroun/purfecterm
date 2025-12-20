@@ -1,5 +1,8 @@
 ## Changelog
 
+### 0.2.10 -- December 20, 2025
+- Moved into separate repository:  https://github.com/phroun/purfecterm/
+
 ### 0.2.9 -- December 15, 2025
 - Flexible East Asian Width mode (private mode 2027): cells can have variable
   visual widths (1.0 or 2.0) based on Unicode East_Asian_Width property
