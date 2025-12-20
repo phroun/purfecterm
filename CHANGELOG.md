@@ -1,5 +1,8 @@
 ## Changelog
 
+### 0.2.11
+- Use callback for resize on TerminalCapabilities
+
 ### 0.2.10 -- December 20, 2025
 - Moved into separate repository:  https://github.com/phroun/purfecterm/
 
