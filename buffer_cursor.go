@@ -286,3 +286,57 @@ func (b *Buffer) IsAutoScrollDisabled() bool {
 	defer b.mu.RUnlock()
 	return b.autoScrollDisabled
 }
+
+// --- Cursor Movement ---
+
+// MoveCursorUp moves cursor up n rows
+func (b *Buffer) MoveCursorUp(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	newY := b.cursorY - n
+	if newY < 0 {
+		newY = 0
+	}
+	b.trackCursorYMove(newY)
+	b.cursorY = newY
+	b.markDirty()
+}
+
+// MoveCursorDown moves cursor down n rows
+func (b *Buffer) MoveCursorDown(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	newY := b.cursorY + n
+	effectiveRows := b.EffectiveRows()
+	if newY >= effectiveRows {
+		newY = effectiveRows - 1
+	}
+	b.trackCursorYMove(newY)
+	b.cursorY = newY
+	b.markDirty()
+}
+
+// MoveCursorForward moves cursor right n columns (CSI C)
+func (b *Buffer) MoveCursorForward(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.setHorizMoveDir(1, false) // Moving right
+	b.cursorX += n
+	effectiveCols := b.EffectiveCols()
+	if b.cursorX >= effectiveCols {
+		b.cursorX = effectiveCols - 1
+	}
+	b.markDirty()
+}
+
+// MoveCursorBackward moves cursor left n columns (CSI D)
+func (b *Buffer) MoveCursorBackward(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.setHorizMoveDir(-1, false) // Moving left
+	b.cursorX -= n
+	if b.cursorX < 0 {
+		b.cursorX = 0
+	}
+	b.markDirty()
+}
