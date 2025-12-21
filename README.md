@@ -81,6 +81,7 @@ func main() {
         win.Add(term.Widget())
         win.Connect("destroy", func() { term.Close() })
         win.ShowAll()
+        win.Present()
 
         glib.IdleAdd(func() bool { term.RunShell(); return false })
     })

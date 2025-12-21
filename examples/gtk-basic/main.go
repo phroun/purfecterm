@@ -66,6 +66,7 @@ func activate(app *gtk.Application) {
 	})
 
 	win.ShowAll()
+	win.Present() // Bring window to front (especially needed on macOS)
 
 	// Start the shell after window is shown
 	glib.IdleAdd(func() bool {
