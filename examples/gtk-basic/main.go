@@ -9,6 +9,31 @@
 // Run with: go run main.go
 package main
 
+/*
+#cgo darwin CFLAGS: -x objective-c
+#cgo darwin LDFLAGS: -framework Cocoa
+
+#ifdef __APPLE__
+#include <objc/runtime.h>
+#include <objc/message.h>
+
+void activateApp() {
+    id ns_app = ((id (*)(Class, SEL))objc_msgSend)(
+        objc_getClass("NSApplication"),
+        sel_registerName("sharedApplication")
+    );
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(
+        ns_app,
+        sel_registerName("activateIgnoringOtherApps:"),
+        1
+    );
+}
+#else
+void activateApp() {}
+#endif
+*/
+import "C"
+
 import (
 	"log"
 	"os"
@@ -69,9 +94,9 @@ func activate(app *gtk.Application) {
 
 	// Start the shell and bring window to front after it's fully realized
 	glib.IdleAdd(func() bool {
-		// Bring window to front on macOS
+		// Bring window to front (native macOS activation)
+		C.activateApp()
 		win.Present()
-		win.GrabFocus()
 		term.Widget().GrabFocus()
 
 		if err := term.RunShell(); err != nil {
