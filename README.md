@@ -57,32 +57,34 @@ package main
 
 import (
     "os"
+    "runtime"
 
+    "github.com/gotk3/gotk3/glib"
     "github.com/gotk3/gotk3/gtk"
     terminal "github.com/phroun/purfecterm/gtk"
 )
 
 func main() {
-    gtk.Init(&os.Args)
+    runtime.LockOSThread()
 
-    win, _ := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
-    win.SetTitle("Terminal")
-    win.SetDefaultSize(800, 600)
-    win.Connect("destroy", gtk.MainQuit)
+    app, _ := gtk.ApplicationNew("com.example.terminal", glib.APPLICATION_FLAGS_NONE)
+    app.Connect("activate", func() {
+        win, _ := gtk.ApplicationWindowNew(app)
+        win.SetTitle("Terminal")
+        win.SetDefaultSize(800, 600)
 
-    term, _ := terminal.New(terminal.Options{
-        Cols:           80,
-        Rows:           24,
-        ScrollbackSize: 10000,
-        FontFamily:     "Monospace",
-        FontSize:       12,
+        term, _ := terminal.New(terminal.Options{
+            Cols: 80, Rows: 24, ScrollbackSize: 10000,
+            FontFamily: "Monospace", FontSize: 12,
+        })
+
+        win.Add(term.Widget())
+        win.Connect("destroy", func() { term.Close() })
+        win.ShowAll()
+
+        glib.IdleAdd(func() bool { term.RunShell(); return false })
     })
-
-    win.Add(term.Widget())
-    win.ShowAll()
-
-    term.RunShell()
-    gtk.Main()
+    os.Exit(app.Run(os.Args))
 }
 ```
 
@@ -93,12 +95,14 @@ package main
 
 import (
     "os"
+    "runtime"
 
     "github.com/mappu/miqt/qt"
     terminal "github.com/phroun/purfecterm/qt"
 )
 
 func main() {
+    runtime.LockOSThread()
     qt.NewQApplication(os.Args)
 
     win := qt.NewQMainWindow(nil)
@@ -106,11 +110,8 @@ func main() {
     win.Resize(800, 600)
 
     term, _ := terminal.New(terminal.Options{
-        Cols:           80,
-        Rows:           24,
-        ScrollbackSize: 10000,
-        FontFamily:     "Monospace",
-        FontSize:       12,
+        Cols: 80, Rows: 24, ScrollbackSize: 10000,
+        FontFamily: "Monospace", FontSize: 12,
     })
 
     win.SetCentralWidget(term.Widget())
