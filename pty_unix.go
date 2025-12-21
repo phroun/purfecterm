@@ -41,6 +41,7 @@ static int set_winsize(int fd, unsigned short rows, unsigned short cols) {
     ws.ws_ypixel = 0;
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
+
 */
 import "C"
 
@@ -63,13 +64,20 @@ func NewPTY() (PTY, error) {
 }
 
 func newUnixPTY() (*UnixPTY, error) {
-	// Open master PTY
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	// Open master PTY using syscall to avoid Go runtime's non-blocking management
+	masterFd, err := syscall.Open("/dev/ptmx", syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	fd := C.int(master.Fd())
+	// Wrap in os.File for convenient Read/Write/Close
+	master := os.NewFile(uintptr(masterFd), "/dev/ptmx")
+	if master == nil {
+		syscall.Close(masterFd)
+		return nil, errors.New("failed to create os.File from PTY fd")
+	}
+
+	fd := C.int(masterFd)
 
 	// Grant access to slave
 	if C.grant_pt(fd) != 0 {

@@ -158,12 +158,12 @@ type Widget struct {
 	scheme purfecterm.ColorScheme
 
 	// Selection state
-	selecting       bool
-	selectStartX    int
-	selectStartY    int
-	mouseDown       bool
-	mouseDownX      int
-	mouseDownY      int
+	selecting            bool
+	selectStartX         int
+	selectStartY         int
+	mouseDown            bool
+	mouseDownX           int
+	mouseDownY           int
 	selectionMoved       bool
 	autoScrollTimer      *qt.QTimer // Timer for auto-scrolling
 	autoScrollDelta      int        // Vertical scroll direction (-1=up, 1=down), magnitude used for speed
@@ -188,6 +188,9 @@ type Widget struct {
 
 	// Callback when data should be written to PTY
 	onInput func([]byte)
+
+	// Callback when terminal resizes (for notifying PTY)
+	onResize func(cols, rows int)
 
 	// Context menu
 	contextMenu *qt.QMenu
@@ -812,6 +815,13 @@ func (w *Widget) SetInputCallback(fn func([]byte)) {
 	w.mu.Unlock()
 }
 
+// SetResizeCallback sets a callback for terminal resize events
+func (w *Widget) SetResizeCallback(fn func(cols, rows int)) {
+	w.mu.Lock()
+	w.onResize = fn
+	w.mu.Unlock()
+}
+
 // Feed writes data to the terminal
 func (w *Widget) Feed(data []byte) {
 	w.parser.Parse(data)
@@ -977,8 +987,8 @@ func (w *Widget) renderCustomGlyph(painter *qt.QPainter, cell *purfecterm.Cell, 
 
 	// Determine cache key flags based on palette characteristics
 	var paletteHash uint64
-	usesDefaultFG := true  // Default to true for fallback mode (no palette)
-	usesBg := true         // Default to true for fallback mode
+	usesDefaultFG := true // Default to true for fallback mode (no palette)
+	usesBg := true        // Default to true for fallback mode
 	isSingleEntry := false
 
 	if palette != nil {
@@ -2966,11 +2976,20 @@ func (w *Widget) resizeEvent(event *qt.QResizeEvent) {
 		newRows = 1
 	}
 
+	// Check if size actually changed
+	oldCols, oldRows := w.buffer.GetSize()
+	sizeChanged := newCols != oldCols || newRows != oldRows
+
 	w.buffer.Resize(newCols, newRows)
 
 	// Update terminal capabilities with new dimensions
 	if w.termCaps != nil {
 		w.termCaps.SetSize(newCols, newRows)
+	}
+
+	// Notify PTY of size change
+	if sizeChanged && w.onResize != nil {
+		w.onResize(newCols, newRows)
 	}
 
 	w.updateScrollbar()

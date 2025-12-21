@@ -32,8 +32,8 @@ type Terminal struct {
 	options Options
 
 	// I/O
-	running bool
-	done    chan struct{}
+	running        bool
+	done           chan struct{}
 	resizeCallback func(cols, rows int)
 }
 
@@ -89,14 +89,24 @@ func New(opts Options) (*Terminal, error) {
 		}
 	})
 
+	// Set resize callback to notify PTY when widget resizes
+	widget.SetResizeCallback(func(cols, rows int) {
+		t.mu.Lock()
+		pty := t.pty
+		t.mu.Unlock()
+		if pty != nil {
+			pty.Resize(cols, rows)
+		}
+	})
+
 	return t, nil
 }
 
 // SetResizeCallback sets a callback that's called when the terminal resizes
 func (t *Terminal) SetResizeCallback(fn func(cols, rows int)) {
-    t.mu.Lock()
-    defer t.mu.Unlock()
-    t.resizeCallback = fn
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.resizeCallback = fn
 }
 
 // Widget returns the Qt widget
@@ -168,10 +178,12 @@ func (t *Terminal) RunCommand(name string, args ...string) error {
 	t.running = true
 	t.mu.Unlock()
 
-	// Set initial size
-	pty.Resize(t.options.Cols, t.options.Rows)
+	// Set initial size to actual widget size (not original options)
+	// This is important because the widget may have been resized after creation
+	cols, rows := t.widget.GetSize()
+	pty.Resize(cols, rows)
 	if t.resizeCallback != nil {
-		t.resizeCallback(t.options.Cols, t.options.Rows)
+		t.resizeCallback(cols, rows)
 	}
 
 	// Start reading from PTY

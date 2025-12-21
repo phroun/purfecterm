@@ -15,14 +15,14 @@ A terminal emulator library for Go with GTK3 and Qt5 widget implementations.
 ## Packages
 
 - `purfecterm` - Core terminal buffer, ANSI parser, and PTY abstraction
-- `purfecterm-gtk` - GTK3 terminal widget
-- `purfecterm-qt` - Qt5 terminal widget
+- `purfecterm/gtk` - GTK3 terminal widget
+- `purfecterm/qt` - Qt5 terminal widget
 
 ## Installation
 
 ```bash
 go get github.com/phroun/purfecterm
-
+```
 
 ### GTK3 Widget
 
@@ -33,7 +33,7 @@ sudo apt install libgtk-3-dev
 # macOS
 brew install gtk+3
 
-go get github.com/phroun/purfecterm/purfecterm-gtk
+go get github.com/phroun/purfecterm/gtk
 ```
 
 ### Qt5 Widget
@@ -45,7 +45,7 @@ sudo apt install qtbase5-dev
 # macOS
 brew install qt@5
 
-go get github.com/phroun/purfecterm/purfecterm-qt
+go get github.com/phroun/purfecterm/qt
 ```
 
 ## Usage
@@ -56,30 +56,36 @@ go get github.com/phroun/purfecterm/purfecterm-qt
 package main
 
 import (
+    "os"
+    "runtime"
+
+    "github.com/gotk3/gotk3/glib"
     "github.com/gotk3/gotk3/gtk"
-    purfectermgtk "github.com/phroun/purfecterm/purfecterm-gtk"
+    terminal "github.com/phroun/purfecterm/gtk"
 )
 
 func main() {
-    gtk.Init(nil)
+    runtime.LockOSThread()
 
-    win, _ := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
-    win.SetTitle("Terminal")
-    win.SetDefaultSize(800, 600)
-    win.Connect("destroy", gtk.MainQuit)
+    app, _ := gtk.ApplicationNew("com.example.terminal", glib.APPLICATION_FLAGS_NONE)
+    app.Connect("activate", func() {
+        win, _ := gtk.ApplicationWindowNew(app)
+        win.SetTitle("Terminal")
+        win.SetDefaultSize(800, 600)
 
-    term, _ := purfectermgtk.New(purfectermgtk.Options{
-        Cols:       80,
-        Rows:       24,
-        FontFamily: "Monospace",
-        FontSize:   14,
+        term, _ := terminal.New(terminal.Options{
+            Cols: 80, Rows: 24, ScrollbackSize: 10000,
+            FontFamily: "Monospace", FontSize: 12,
+        })
+
+        win.Add(term.Widget())
+        win.Connect("destroy", func() { term.Close() })
+        win.ShowAll()
+        win.Present()
+
+        glib.IdleAdd(func() bool { term.RunShell(); return false })
     })
-
-    win.Add(term.Widget())
-    win.ShowAll()
-
-    term.RunShell()
-    gtk.Main()
+    os.Exit(app.Run(os.Args))
 }
 ```
 
@@ -89,22 +95,24 @@ func main() {
 package main
 
 import (
+    "os"
+    "runtime"
+
     "github.com/mappu/miqt/qt"
-    purfectermqt "github.com/phroun/purfecterm/purfecterm-qt"
+    terminal "github.com/phroun/purfecterm/qt"
 )
 
 func main() {
-    qt.NewQApplication(nil)
+    runtime.LockOSThread()
+    qt.NewQApplication(os.Args)
 
     win := qt.NewQMainWindow(nil)
     win.SetWindowTitle("Terminal")
     win.Resize(800, 600)
 
-    term, _ := purfectermqt.New(purfectermqt.Options{
-        Cols:       80,
-        Rows:       24,
-        FontFamily: "Monospace",
-        FontSize:   14,
+    term, _ := terminal.New(terminal.Options{
+        Cols: 80, Rows: 24, ScrollbackSize: 10000,
+        FontFamily: "Monospace", FontSize: 12,
     })
 
     win.SetCentralWidget(term.Widget())
@@ -128,15 +136,19 @@ import (
 func main() {
     // Create a terminal buffer
     buf := purfecterm.NewBuffer(80, 24, 1000)
-    
-    // Feed ANSI data
-    buf.Feed([]byte("\x1b[31mHello, World!\x1b[0m\n"))
-    
+
+    // Create parser and feed ANSI data
+    parser := purfecterm.NewParser(buf)
+    parser.Parse([]byte("\x1b[31mHello, World!\x1b[0m\n"))
+
     // Get cell content
     cell := buf.GetCell(0, 0)
-    fmt.Printf("Character: %c, Color: %v\n", cell.Char, cell.FG)
+    fmt.Printf("Character: %c, Color: R=%d G=%d B=%d\n",
+        cell.Char, cell.Foreground.R, cell.Foreground.G, cell.Foreground.B)
 }
 ```
+
+See the `examples/` directory for complete working examples.
 
 ## Color Schemes
 

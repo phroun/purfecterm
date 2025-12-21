@@ -2,3 +2,8 @@
 dist
 /releases
 /bin/
+
+# Example binaries
+examples/buffer-only/buffer-only
+examples/gtk-basic/gtk-basic
+examples/qt-basic/qt-basic

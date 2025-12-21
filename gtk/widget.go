@@ -402,8 +402,14 @@ type Widget struct {
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
+	// Callback when terminal size changes (for PTY notification)
+	onResize func(cols, rows int)
+
 	// Clipboard
 	clipboard *gtk.Clipboard
+
+	// Context menu for right-click
+	contextMenu *gtk.Menu
 
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
@@ -543,6 +549,31 @@ func NewWidget(cols, rows, scrollbackSize int) (*Widget, error) {
 
 	// Get clipboard
 	w.clipboard, _ = gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)
+
+	// Create context menu for right-click
+	w.contextMenu, _ = gtk.MenuNew()
+	copyItem, _ := gtk.MenuItemNewWithLabel("Copy")
+	copyItem.Connect("activate", func() {
+		w.CopySelection()
+	})
+	w.contextMenu.Append(copyItem)
+
+	pasteItem, _ := gtk.MenuItemNewWithLabel("Paste")
+	pasteItem.Connect("activate", func() {
+		w.PasteClipboard()
+	})
+	w.contextMenu.Append(pasteItem)
+
+	separator, _ := gtk.SeparatorMenuItemNew()
+	w.contextMenu.Append(separator)
+
+	selectAllItem, _ := gtk.MenuItemNewWithLabel("Select All")
+	selectAllItem.Connect("activate", func() {
+		w.SelectAll()
+	})
+	w.contextMenu.Append(selectAllItem)
+
+	w.contextMenu.ShowAll()
 
 	// Set minimum size (small fixed value to allow flexible resizing)
 	w.updateFontMetrics()
@@ -1298,6 +1329,13 @@ func (w *Widget) onCornerButtonPress(da *gtk.DrawingArea, event *gdk.Event) bool
 func (w *Widget) SetInputCallback(fn func([]byte)) {
 	w.mu.Lock()
 	w.onInput = fn
+	w.mu.Unlock()
+}
+
+// SetResizeCallback sets a callback that's called when the terminal size changes
+func (w *Widget) SetResizeCallback(fn func(cols, rows int)) {
+	w.mu.Lock()
+	w.onResize = fn
 	w.mu.Unlock()
 }
 
@@ -2278,7 +2316,14 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		da.GrabFocus()
 		return true
 	}
-	// Let other buttons (like right-click) propagate for context menus
+
+	if button == 3 { // Right button - show context menu
+		if w.contextMenu != nil {
+			w.contextMenu.PopupAtPointer(ev)
+		}
+		return true
+	}
+
 	return false
 }
 
@@ -3126,12 +3171,22 @@ func (w *Widget) onConfigure(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		newRows = 1
 	}
 
+	// Check if size actually changed
+	oldCols, oldRows := w.buffer.GetSize()
+	sizeChanged := newCols != oldCols || newRows != oldRows
+
 	w.buffer.Resize(newCols, newRows)
 
 	// Update terminal capabilities with new dimensions
 	if w.termCaps != nil {
 		w.termCaps.SetSize(newCols, newRows)
 	}
+
+	// Notify PTY of size change
+	if sizeChanged && w.onResize != nil {
+		w.onResize(newCols, newRows)
+	}
+
 	return false
 }
 
