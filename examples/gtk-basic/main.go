@@ -68,11 +68,18 @@ func activate(app *gtk.Application) {
 
 	win.ShowAll()
 
+	// Feed a welcome message directly (not via PTY) to test rendering
+	term.Feed("\x1b[32mWelcome to PurfecTerm!\x1b[0m\r\n")
+	term.Feed("If you see this, rendering works.\r\n\r\n")
+
 	// Start the shell AFTER ShowAll to ensure widget is realized
 	glib.IdleAdd(func() bool {
+		fmt.Println("Starting shell...")
 		err := term.RunShell()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
+		} else {
+			fmt.Println("Shell started successfully")
 		}
 		return false // Don't repeat
 	})
