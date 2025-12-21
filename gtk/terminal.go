@@ -1,7 +1,6 @@
 package purfectermgtk
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -176,9 +175,7 @@ func (t *Terminal) RunCommand(name string, args ...string) error {
 	}
 
 	// Start reading from PTY
-	fmt.Fprintln(os.Stderr, "[DEBUG] About to start readLoop goroutine")
 	go t.readLoop()
-	fmt.Fprintln(os.Stderr, "[DEBUG] readLoop goroutine started")
 
 	// Wait for command to exit
 	go func() {
@@ -193,7 +190,6 @@ func (t *Terminal) RunCommand(name string, args ...string) error {
 }
 
 func (t *Terminal) readLoop() {
-	fmt.Fprintln(os.Stderr, "[DEBUG] readLoop started")
 	buf := make([]byte, 4096)
 	for {
 		t.mu.Lock()
@@ -202,26 +198,14 @@ func (t *Terminal) readLoop() {
 		t.mu.Unlock()
 
 		if !running || pty == nil {
-			fmt.Fprintln(os.Stderr, "[DEBUG] readLoop exiting: not running or pty nil")
 			return
 		}
 
-		fmt.Fprintln(os.Stderr, "[DEBUG] About to read from PTY...")
 		n, err := pty.Read(buf)
-		fmt.Fprintf(os.Stderr, "[DEBUG] PTY Read returned: n=%d, err=%v\n", n, err)
 		if n > 0 {
-			debugLen := n
-			if debugLen > 50 {
-				debugLen = 50
-			}
-			fmt.Fprintf(os.Stderr, "[DEBUG] PTY read %d bytes: %q\n", n, string(buf[:debugLen]))
 			t.widget.Feed(buf[:n])
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG] PTY read error: %v\n", err)
-			if err != io.EOF {
-				// Log error?
-			}
 			return
 		}
 	}
