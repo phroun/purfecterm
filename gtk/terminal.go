@@ -1,7 +1,6 @@
 package purfectermgtk
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"sync"
