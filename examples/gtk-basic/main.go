@@ -66,10 +66,10 @@ func activate(app *gtk.Application) {
 	})
 
 	win.ShowAll()
-	win.Present() // Bring window to front (especially needed on macOS)
 
-	// Start the shell after window is shown
+	// Start the shell and bring window to front after it's fully realized
 	glib.IdleAdd(func() bool {
+		win.Present() // Bring window to front (especially needed on macOS)
 		if err := term.RunShell(); err != nil {
 			log.Printf("Failed to start shell: %v", err)
 		}
