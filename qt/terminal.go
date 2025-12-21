@@ -107,6 +107,7 @@ func (t *Terminal) SetResizeCallback(fn func(cols, rows int)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.resizeCallback = fn
+	t.widget.SetResizeCallback(fn)
 }
 
 // Widget returns the Qt widget
