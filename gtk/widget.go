@@ -402,6 +402,9 @@ type Widget struct {
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
+	// Callback when terminal size changes (for PTY notification)
+	onResize func(cols, rows int)
+
 	// Clipboard
 	clipboard *gtk.Clipboard
 
@@ -1298,6 +1301,13 @@ func (w *Widget) onCornerButtonPress(da *gtk.DrawingArea, event *gdk.Event) bool
 func (w *Widget) SetInputCallback(fn func([]byte)) {
 	w.mu.Lock()
 	w.onInput = fn
+	w.mu.Unlock()
+}
+
+// SetResizeCallback sets a callback that's called when the terminal size changes
+func (w *Widget) SetResizeCallback(fn func(cols, rows int)) {
+	w.mu.Lock()
+	w.onResize = fn
 	w.mu.Unlock()
 }
 
@@ -3126,12 +3136,22 @@ func (w *Widget) onConfigure(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		newRows = 1
 	}
 
+	// Check if size actually changed
+	oldCols, oldRows := w.buffer.GetSize()
+	sizeChanged := newCols != oldCols || newRows != oldRows
+
 	w.buffer.Resize(newCols, newRows)
 
 	// Update terminal capabilities with new dimensions
 	if w.termCaps != nil {
 		w.termCaps.SetSize(newCols, newRows)
 	}
+
+	// Notify PTY of size change
+	if sizeChanged && w.onResize != nil {
+		w.onResize(newCols, newRows)
+	}
+
 	return false
 }
 

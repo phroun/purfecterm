@@ -92,6 +92,16 @@ func New(opts Options) (*Terminal, error) {
 		}
 	})
 
+	// Set resize callback to notify PTY when widget resizes
+	widget.SetResizeCallback(func(cols, rows int) {
+		t.mu.Lock()
+		pty := t.pty
+		t.mu.Unlock()
+		if pty != nil {
+			pty.Resize(cols, rows)
+		}
+	})
+
 	return t, nil
 }
 
