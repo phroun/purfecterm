@@ -42,15 +42,6 @@ static int set_winsize(int fd, unsigned short rows, unsigned short cols) {
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
 
-// Ensure file descriptor is in blocking mode (clear O_NONBLOCK)
-static int set_blocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        return -1;
-    }
-    flags &= ~O_NONBLOCK;
-    return fcntl(fd, F_SETFL, flags);
-}
 */
 import "C"
 
@@ -82,9 +73,9 @@ func newUnixPTY() (*UnixPTY, error) {
 	fd := C.int(master.Fd())
 
 	// Ensure blocking mode (macOS may default to non-blocking)
-	if C.set_blocking(fd) != 0 {
+	if err := syscall.SetNonblock(int(master.Fd()), false); err != nil {
 		master.Close()
-		return nil, errors.New("failed to set blocking mode on PTY")
+		return nil, errors.New("failed to set blocking mode on PTY: " + err.Error())
 	}
 
 	// Grant access to slave
