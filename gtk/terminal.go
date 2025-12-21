@@ -1,6 +1,7 @@
 package purfectermgtk
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -190,6 +191,7 @@ func (t *Terminal) RunCommand(name string, args ...string) error {
 }
 
 func (t *Terminal) readLoop() {
+	fmt.Println("[DEBUG] readLoop started")
 	buf := make([]byte, 4096)
 	for {
 		t.mu.Lock()
@@ -198,14 +200,21 @@ func (t *Terminal) readLoop() {
 		t.mu.Unlock()
 
 		if !running || pty == nil {
+			fmt.Println("[DEBUG] readLoop exiting: not running or pty nil")
 			return
 		}
 
 		n, err := pty.Read(buf)
 		if n > 0 {
+			debugLen := n
+			if debugLen > 50 {
+				debugLen = 50
+			}
+			fmt.Printf("[DEBUG] PTY read %d bytes: %q\n", n, string(buf[:debugLen]))
 			t.widget.Feed(buf[:n])
 		}
 		if err != nil {
+			fmt.Printf("[DEBUG] PTY read error: %v\n", err)
 			if err != io.EOF {
 				// Log error?
 			}
