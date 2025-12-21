@@ -408,6 +408,9 @@ type Widget struct {
 	// Clipboard
 	clipboard *gtk.Clipboard
 
+	// Context menu for right-click
+	contextMenu *gtk.Menu
+
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
 	termCaps *purfecterm.TerminalCapabilities
@@ -546,6 +549,31 @@ func NewWidget(cols, rows, scrollbackSize int) (*Widget, error) {
 
 	// Get clipboard
 	w.clipboard, _ = gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)
+
+	// Create context menu for right-click
+	w.contextMenu, _ = gtk.MenuNew()
+	copyItem, _ := gtk.MenuItemNewWithLabel("Copy")
+	copyItem.Connect("activate", func() {
+		w.CopySelection()
+	})
+	w.contextMenu.Append(copyItem)
+
+	pasteItem, _ := gtk.MenuItemNewWithLabel("Paste")
+	pasteItem.Connect("activate", func() {
+		w.PasteClipboard()
+	})
+	w.contextMenu.Append(pasteItem)
+
+	separator, _ := gtk.SeparatorMenuItemNew()
+	w.contextMenu.Append(separator)
+
+	selectAllItem, _ := gtk.MenuItemNewWithLabel("Select All")
+	selectAllItem.Connect("activate", func() {
+		w.SelectAll()
+	})
+	w.contextMenu.Append(selectAllItem)
+
+	w.contextMenu.ShowAll()
 
 	// Set minimum size (small fixed value to allow flexible resizing)
 	w.updateFontMetrics()
@@ -2288,7 +2316,14 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		da.GrabFocus()
 		return true
 	}
-	// Let other buttons (like right-click) propagate for context menus
+
+	if button == 3 { // Right button - show context menu
+		if w.contextMenu != nil {
+			w.contextMenu.PopupAtPointer(ev)
+		}
+		return true
+	}
+
 	return false
 }
 

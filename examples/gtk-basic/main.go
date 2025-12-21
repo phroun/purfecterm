@@ -70,6 +70,14 @@ func activate(app *gtk.Application) {
 	win.SetTitle("PurfecTerm GTK Example")
 	win.SetDefaultSize(800, 600)
 
+	// Add Command+Q / Ctrl+Q to quit
+	quitAction := glib.SimpleActionNew("quit", nil)
+	quitAction.Connect("activate", func() {
+		app.Quit()
+	})
+	app.AddAction(quitAction)
+	app.SetAccelsForAction("app.quit", []string{"<Primary>q"})
+
 	// Create the terminal widget
 	term, err := terminal.New(terminal.Options{
 		Cols:           80,
