@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	terminal "github.com/phroun/purfecterm/gtk"
@@ -69,7 +70,12 @@ func activate(app *gtk.Application) {
 
 	// Start the shell and bring window to front after it's fully realized
 	glib.IdleAdd(func() bool {
-		win.Present() // Bring window to front (especially needed on macOS)
+		// Bring window to front on macOS
+		win.Present()
+		if gdkWin, err := win.GetWindow(); err == nil && gdkWin != nil {
+			gdkWin.Raise()
+			gdkWin.Focus(0) // timestamp 0 = current time
+		}
 		if err := term.RunShell(); err != nil {
 			log.Printf("Failed to start shell: %v", err)
 		}
