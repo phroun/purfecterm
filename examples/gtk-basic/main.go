@@ -92,16 +92,16 @@ func activate(app *gtk.Application) {
 
 	win.ShowAll()
 
-	// Start the shell and bring window to front after it's fully realized
+	// Bring window to front (native macOS activation)
 	glib.IdleAdd(func() bool {
-		// Bring window to front (native macOS activation)
 		C.activateApp()
 		win.Present()
 		term.Widget().GrabFocus()
-
-		if err := term.RunShell(); err != nil {
-			log.Printf("Failed to start shell: %v", err)
-		}
 		return false
 	})
+
+	// Start the shell
+	if err := term.RunShell(); err != nil {
+		log.Printf("Failed to start shell: %v", err)
+	}
 }
