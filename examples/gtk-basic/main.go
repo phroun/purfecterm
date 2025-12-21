@@ -20,13 +20,26 @@ import (
 	terminal "github.com/phroun/purfecterm/gtk"
 )
 
+const appID = "com.example.purfecterm-gtk"
+
 func main() {
 	// Lock main thread for GTK (required on macOS)
 	runtime.LockOSThread()
 
-	gtk.Init(&os.Args)
+	gtkApp, err := gtk.ApplicationNew(appID, glib.APPLICATION_FLAGS_NONE)
+	if err != nil {
+		log.Fatal("Unable to create application:", err)
+	}
 
-	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
+	gtkApp.Connect("activate", func() {
+		activate(gtkApp)
+	})
+
+	os.Exit(gtkApp.Run(os.Args))
+}
+
+func activate(app *gtk.Application) {
+	win, err := gtk.ApplicationWindowNew(app)
 	if err != nil {
 		log.Fatal("Unable to create window:", err)
 	}
@@ -51,23 +64,16 @@ func main() {
 	// Handle window close
 	win.Connect("destroy", func() {
 		term.Close()
-		gtk.MainQuit()
 	})
 
 	win.ShowAll()
 
 	// Start the shell AFTER ShowAll to ensure widget is realized
 	glib.IdleAdd(func() bool {
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
 		err := term.RunShell()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
 		}
 		return false // Don't repeat
 	})
-
-	gtk.Main()
 }
