@@ -22,7 +22,7 @@ func main() {
 	// Lock main thread for Qt
 	runtime.LockOSThread()
 
-	app := qt.NewQApplication(os.Args)
+	qt.NewQApplication(os.Args)
 
 	win := qt.NewQMainWindow(nil)
 	win.SetWindowTitle("PurfecTerm Qt Example")
@@ -44,22 +44,13 @@ func main() {
 	// Add to window
 	win.SetCentralWidget(term.Widget())
 
-	// Handle window close
-	win.OnCloseEvent(func(event *qt.QCloseEvent) {
-		term.Close()
-		event.Accept()
-	})
-
 	win.Show()
 
-	// Start the shell after showing window
-	// Use a single-shot timer to defer until event loop is running
-	qt.QTimer_SingleShot(0, func() {
-		err := term.RunShell()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
-		}
-	})
+	// Start the shell
+	err = term.RunShell()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start shell: %v\n", err)
+	}
 
-	app.Exec()
+	qt.QApplication_Exec()
 }
