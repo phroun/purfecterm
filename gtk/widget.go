@@ -381,6 +381,9 @@ type Widget struct {
 	mouseDownY     int
 	selectionMoved bool // True if mouse moved since button press
 
+	// Resize notification callback
+	resizeCallback func(cols, rows int)
+
 	// Auto-scroll when dragging beyond edges
 	autoScrollTimerID    glib.SourceHandle // Timer for auto-scrolling
 	autoScrollDelta      int               // Vertical scroll direction (-1=up, 1=down), magnitude used for speed
