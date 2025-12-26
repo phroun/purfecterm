@@ -53,8 +53,9 @@ func (h *InputHandler) processInput(data []byte) {
 	h.sendToPTY(data)
 }
 
-// handleKey processes a parsed key event from direct-key-handler
-func (h *InputHandler) handleKey(key string) {
+// handleKey processes a parsed key event from direct-key-handler.
+// Returns true if the key was consumed.
+func (h *InputHandler) handleKey(key string) bool {
 	// Check for input callback first
 	h.term.mu.Lock()
 	callback := h.term.inputCallback
@@ -64,13 +65,13 @@ func (h *InputHandler) handleKey(key string) {
 	keyBytes := keyToBytes(key)
 	if callback != nil && len(keyBytes) > 0 {
 		if callback(keyBytes) {
-			return // Consumed by callback
+			return true // Consumed by callback
 		}
 	}
 
 	// Check if this key should be handled locally (scrollback navigation)
 	if h.handleLocalKey(key) {
-		return
+		return true
 	}
 
 	// Scroll to bottom on any input (except scrollback keys)
@@ -82,7 +83,10 @@ func (h *InputHandler) handleKey(key string) {
 	// Convert key to bytes and send to PTY
 	if len(keyBytes) > 0 {
 		h.sendToPTY(keyBytes)
+		return true
 	}
+
+	return false
 }
 
 // handleLocalKey handles keys that are processed by the CLI adapter locally

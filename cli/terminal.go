@@ -728,6 +728,101 @@ func (t *Terminal) Renderer() *Renderer {
 	return t.renderer
 }
 
+// SetOffset changes the terminal's position on screen (for embedded mode).
+// This allows dynamic repositioning without recreating the terminal.
+func (t *Terminal) SetOffset(x, y int) {
+	t.mu.Lock()
+	changed := t.options.OffsetX != x || t.options.OffsetY != y
+	t.options.OffsetX = x
+	t.options.OffsetY = y
+	t.mu.Unlock()
+
+	if changed {
+		t.renderer.ForceFullRedraw()
+	}
+}
+
+// GetOffset returns the terminal's current screen position
+func (t *Terminal) GetOffset() (x, y int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.options.OffsetX, t.options.OffsetY
+}
+
+// GetBounds returns the terminal's current position and size.
+// Returns offsetX, offsetY, columns, rows.
+func (t *Terminal) GetBounds() (x, y, cols, rows int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.options.OffsetX, t.options.OffsetY, t.options.Cols, t.options.Rows
+}
+
+// GetOuterSize returns the total size including border and status bar.
+// This is useful for layout calculations in a TUI toolkit.
+func (t *Terminal) GetOuterSize() (width, height int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	width = t.options.Cols
+	height = t.options.Rows
+
+	if t.options.BorderStyle != BorderNone {
+		width += 2  // Left and right border
+		height += 2 // Top and bottom border
+	}
+	if t.options.ShowStatusBar {
+		height += 1
+	}
+
+	return width, height
+}
+
+// GetMinSize returns the minimum usable terminal size.
+// The terminal enforces a minimum of 20 columns and 5 rows.
+func (t *Terminal) GetMinSize() (cols, rows int) {
+	return 20, 5
+}
+
+// GetMinOuterSize returns the minimum total size including border and status bar.
+func (t *Terminal) GetMinOuterSize() (width, height int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	width, height = 20, 5
+
+	if t.options.BorderStyle != BorderNone {
+		width += 2
+		height += 2
+	}
+	if t.options.ShowStatusBar {
+		height += 1
+	}
+
+	return width, height
+}
+
+// NeedsRender returns true if the terminal has pending changes to render.
+// Useful for TUI toolkits to optimize render cycles.
+func (t *Terminal) NeedsRender() bool {
+	return t.renderer.NeedsRender()
+}
+
+// HandleKeyString processes a key event by name (for embedded mode).
+// Accepts key names in direct-key-handler format: "a", "Enter", "Up", "C-c", "M-x", "S-Tab", etc.
+// Returns true if the input was consumed.
+func (t *Terminal) HandleKeyString(key string) bool {
+	t.mu.Lock()
+	focused := t.focused
+	t.mu.Unlock()
+
+	if !focused {
+		return false
+	}
+
+	// Delegate to input handler
+	return t.input.handleKey(key)
+}
+
 // Stop stops the terminal and restores the original terminal state
 func (t *Terminal) Stop() error {
 	// Signal stop

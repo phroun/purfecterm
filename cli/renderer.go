@@ -441,6 +441,13 @@ func (r *Renderer) ForceFullRedraw() {
 	r.mu.Unlock()
 }
 
+// NeedsRender returns true if there are pending changes to render
+func (r *Renderer) NeedsRender() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.renderNeeded
+}
+
 // RenderToString renders the terminal and returns the ANSI escape sequence string
 // instead of writing to stdout. This is useful for embedded mode where the parent
 // TUI needs to composite the terminal with other widgets.
