@@ -483,34 +483,52 @@ func (app *Application) enableMouse() {
 }
 ```
 
-## PurfecTerm API Gaps
+## PurfecTerm Widget API
 
-Current `cli.Terminal` may need these additions for full toolkit integration:
+The `cli.Terminal` provides these methods for TUI toolkit integration:
 
-1. **Dynamic Position Updates**
-   ```go
-   func (t *Terminal) SetOffset(x, y int)  // Change position without recreating
-   ```
+### Position and Bounds
+```go
+func (t *Terminal) SetOffset(x, y int)                    // Dynamic repositioning
+func (t *Terminal) GetOffset() (x, y int)                 // Current position
+func (t *Terminal) GetBounds() (x, y, cols, rows int)     // Position and inner size
+func (t *Terminal) GetOuterSize() (width, height int)     // Total size with decorations
+```
 
-2. **Bounds Query**
-   ```go
-   func (t *Terminal) GetBounds() (x, y, cols, rows int)
-   ```
+### Size Constraints
+```go
+func (t *Terminal) GetMinSize() (cols, rows int)          // Minimum inner size (20x5)
+func (t *Terminal) GetMinOuterSize() (width, height int)  // Minimum with decorations
+func (t *Terminal) Resize(cols, rows int)                 // Change inner size
+```
 
-3. **Minimum Size**
-   ```go
-   func (t *Terminal) GetMinSize() (cols, rows int)  // e.g., 20x5
-   ```
+### Focus Management
+```go
+func (t *Terminal) SetFocused(focused bool)               // Set focus state
+func (t *Terminal) IsFocused() bool                       // Check focus state
+func (t *Terminal) SetOnFocus(fn func(bool))              // Focus change callback
+```
 
-4. **Dirty Flag**
-   ```go
-   func (t *Terminal) NeedsRender() bool  // For render optimization
-   ```
+### Input Handling
+```go
+func (t *Terminal) HandleInput(data []byte) bool          // Raw byte input
+func (t *Terminal) HandleKeyString(key string) bool       // Named key input ("Up", "C-c")
+func (t *Terminal) SetInputCallback(fn func([]byte) bool) // Input interception
+```
 
-5. **Key String Input**
-   ```go
-   func (t *Terminal) HandleKeyString(key string) bool  // Accept "Up", "C-c", etc.
-   ```
+### Rendering
+```go
+func (t *Terminal) RenderToString() string                // Get ANSI output for compositing
+func (t *Terminal) NeedsRender() bool                     // Check dirty flag
+func (t *Terminal) Renderer() *Renderer                   // Access renderer directly
+```
+
+### Lifecycle
+```go
+func (t *Terminal) Start() error                          // Start (render loop only in embedded)
+func (t *Terminal) Stop() error                           // Clean shutdown
+func (t *Terminal) IsEmbedded() bool                      // Check embedded mode
+```
 
 ## Recommended Libraries
 
