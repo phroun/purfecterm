@@ -128,16 +128,16 @@ func New(opts Options) (*Terminal, error) {
 	// Detect host terminal size if auto-sizing
 	hostCols, hostRows := getHostTerminalSize()
 	if opts.AutoSize {
-		// Account for border if present
+		// Account for border if present (2 for top/bottom, 2 for left/right)
 		borderOffset := 0
 		if opts.BorderStyle != BorderNone {
-			borderOffset = 2 // Top and bottom border
+			borderOffset = 2
 		}
 		statusOffset := 0
 		if opts.ShowStatusBar {
 			statusOffset = 1
 		}
-		opts.Cols = hostCols - opts.OffsetX*2
+		opts.Cols = hostCols - opts.OffsetX*2 - borderOffset
 		opts.Rows = hostRows - opts.OffsetY*2 - borderOffset - statusOffset
 		if opts.Cols < 20 {
 			opts.Cols = 20
@@ -246,7 +246,7 @@ func (t *Terminal) handleResize() {
 	t.hostRows = newRows
 
 	if t.options.AutoSize {
-		// Recalculate terminal size
+		// Recalculate terminal size (borderOffset accounts for left/right and top/bottom)
 		borderOffset := 0
 		if t.options.BorderStyle != BorderNone {
 			borderOffset = 2
@@ -255,7 +255,7 @@ func (t *Terminal) handleResize() {
 		if t.options.ShowStatusBar {
 			statusOffset = 1
 		}
-		cols := newCols - t.options.OffsetX*2
+		cols := newCols - t.options.OffsetX*2 - borderOffset
 		rows := newRows - t.options.OffsetY*2 - borderOffset - statusOffset
 		if cols < 20 {
 			cols = 20
