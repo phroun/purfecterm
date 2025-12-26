@@ -28,6 +28,47 @@ const (
 	BorderRounded                   // Rounded corners (single line)
 )
 
+// Rect represents a rectangle for clipping
+type Rect struct {
+	X, Y          int // Top-left position
+	Width, Height int // Size
+}
+
+// Contains returns true if the point (x, y) is within the rectangle
+func (r Rect) Contains(x, y int) bool {
+	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
+}
+
+// IsEmpty returns true if the rectangle has zero area
+func (r Rect) IsEmpty() bool {
+	return r.Width <= 0 || r.Height <= 0
+}
+
+// Intersect returns the intersection of two rectangles
+func (r Rect) Intersect(other Rect) Rect {
+	x1 := max(r.X, other.X)
+	y1 := max(r.Y, other.Y)
+	x2 := min(r.X+r.Width, other.X+other.Width)
+	y2 := min(r.Y+r.Height, other.Y+other.Height)
+
+	if x2 <= x1 || y2 <= y1 {
+		return Rect{} // No intersection
+	}
+	return Rect{X: x1, Y: y1, Width: x2 - x1, Height: y2 - y1}
+}
+
+// RenderedCell represents a single cell ready for display
+type RenderedCell struct {
+	Char      rune
+	Combining string
+	Fg, Bg    purfecterm.Color
+	Bold      bool
+	Italic    bool
+	Underline bool
+	Blink     bool
+	Reverse   bool
+}
+
 // TerminalCapabilities describes the capabilities of the terminal
 type TerminalCapabilities struct {
 	TermType      string
@@ -63,6 +104,14 @@ type Options struct {
 
 	// If true, render a status bar at the bottom
 	ShowStatusBar bool
+
+	// Embedded mode: when true, the terminal acts as a widget within a larger TUI.
+	// It will NOT enter raw mode, switch to alternate screen, or start its own input loop.
+	// The parent application is responsible for:
+	//   - Managing raw mode for the host terminal
+	//   - Calling HandleInput() to send keystrokes when focused
+	//   - Calling Render() or RenderToString() to display the terminal
+	Embedded bool
 }
 
 // Terminal is a complete terminal emulator running within a CLI terminal
@@ -91,6 +140,15 @@ type Terminal struct {
 	// Actual terminal size
 	hostCols int
 	hostRows int
+
+	// Focus state for embedded mode
+	focused  bool
+	onFocus  func(bool) // Called when focus state changes
+	onBell   func()     // Called when bell is triggered (for parent TUI notification)
+
+	// Clipping for partial visibility (e.g., scrollable containers)
+	clipRect    Rect // Visible area in screen coordinates (zero = no clipping)
+	clipEnabled bool
 
 	// Callbacks
 	onExit   func(int)            // Called when child process exits with exit code
@@ -128,16 +186,16 @@ func New(opts Options) (*Terminal, error) {
 	// Detect host terminal size if auto-sizing
 	hostCols, hostRows := getHostTerminalSize()
 	if opts.AutoSize {
-		// Account for border if present
+		// Account for border if present (2 for top/bottom, 2 for left/right)
 		borderOffset := 0
 		if opts.BorderStyle != BorderNone {
-			borderOffset = 2 // Top and bottom border
+			borderOffset = 2
 		}
 		statusOffset := 0
 		if opts.ShowStatusBar {
 			statusOffset = 1
 		}
-		opts.Cols = hostCols - opts.OffsetX*2
+		opts.Cols = hostCols - opts.OffsetX*2 - borderOffset
 		opts.Rows = hostRows - opts.OffsetY*2 - borderOffset - statusOffset
 		if opts.Cols < 20 {
 			opts.Cols = 20
@@ -159,6 +217,7 @@ func New(opts Options) (*Terminal, error) {
 		stopRender: make(chan struct{}),
 		hostCols:   hostCols,
 		hostRows:   hostRows,
+		focused:    !opts.Embedded, // Non-embedded terminals are always focused
 	}
 
 	// Create renderer
@@ -184,35 +243,39 @@ func getHostTerminalSize() (cols, rows int) {
 	return cols, rows
 }
 
-// Start initializes the terminal, enters raw mode, and starts rendering
+// Start initializes the terminal, enters raw mode, and starts rendering.
+// In embedded mode, this only starts the render loop; the parent TUI is responsible
+// for raw mode and input handling.
 func (t *Terminal) Start() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Enter raw mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to enter raw mode: %w", err)
+	if !t.options.Embedded {
+		// Enter raw mode
+		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("failed to enter raw mode: %w", err)
+		}
+		t.oldState = oldState
+
+		// Hide host cursor
+		fmt.Print("\033[?25l")
+
+		// Enable alternate screen buffer
+		fmt.Print("\033[?1049h")
+
+		// Clear screen
+		fmt.Print("\033[2J\033[H")
+
+		// Set up SIGWINCH handler for terminal resize
+		go t.handleSIGWINCH()
+
+		// Start input loop (only in non-embedded mode)
+		go t.input.InputLoop()
 	}
-	t.oldState = oldState
-
-	// Hide host cursor
-	fmt.Print("\033[?25l")
-
-	// Enable alternate screen buffer
-	fmt.Print("\033[?1049h")
-
-	// Clear screen
-	fmt.Print("\033[2J\033[H")
-
-	// Set up SIGWINCH handler for terminal resize
-	go t.handleSIGWINCH()
 
 	// Start render loop
 	go t.renderer.RenderLoop()
-
-	// Start input loop
-	go t.input.InputLoop()
 
 	return nil
 }
@@ -246,7 +309,7 @@ func (t *Terminal) handleResize() {
 	t.hostRows = newRows
 
 	if t.options.AutoSize {
-		// Recalculate terminal size
+		// Recalculate terminal size (borderOffset accounts for left/right and top/bottom)
 		borderOffset := 0
 		if t.options.BorderStyle != BorderNone {
 			borderOffset = 2
@@ -255,7 +318,7 @@ func (t *Terminal) handleResize() {
 		if t.options.ShowStatusBar {
 			statusOffset = 1
 		}
-		cols := newCols - t.options.OffsetX*2
+		cols := newCols - t.options.OffsetX*2 - borderOffset
 		rows := newRows - t.options.OffsetY*2 - borderOffset - statusOffset
 		if cols < 20 {
 			cols = 20
@@ -579,6 +642,355 @@ func (t *Terminal) SetColorScheme(scheme purfecterm.ColorScheme) {
 	t.renderer.RequestRender()
 }
 
+// SetFocused sets the focus state of the terminal (for embedded mode).
+// When focused, the terminal will process input and show its cursor.
+// When unfocused, input is ignored and the cursor is hidden.
+func (t *Terminal) SetFocused(focused bool) {
+	t.mu.Lock()
+	changed := t.focused != focused
+	t.focused = focused
+	callback := t.onFocus
+	t.mu.Unlock()
+
+	if changed {
+		t.renderer.RequestRender()
+		if callback != nil {
+			callback(focused)
+		}
+	}
+}
+
+// IsFocused returns whether the terminal currently has focus
+func (t *Terminal) IsFocused() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.focused
+}
+
+// SetOnFocus sets a callback for focus state changes
+func (t *Terminal) SetOnFocus(fn func(focused bool)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onFocus = fn
+}
+
+// SetOnBell sets a callback for when the terminal bell is triggered.
+// Useful for parent TUI to show visual notification when terminal needs attention.
+func (t *Terminal) SetOnBell(fn func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onBell = fn
+}
+
+// HandleInput processes input from the parent TUI (for embedded mode).
+// The parent TUI should call this method when the terminal has focus and
+// receives keyboard input. Returns true if the input was consumed.
+func (t *Terminal) HandleInput(data []byte) bool {
+	t.mu.Lock()
+	focused := t.focused
+	callback := t.inputCallback
+	t.mu.Unlock()
+
+	// Ignore input when not focused
+	if !focused {
+		return false
+	}
+
+	// Check for input callback first
+	if callback != nil {
+		if callback(data) {
+			return true // Consumed by callback
+		}
+	}
+
+	// Process through the input handler
+	t.input.processInput(data)
+	return true
+}
+
+// HandleResize notifies the terminal of a host terminal resize (for embedded mode).
+// The parent TUI should call this when it detects a resize.
+func (t *Terminal) HandleResize(hostCols, hostRows int) {
+	t.mu.Lock()
+	if hostCols == t.hostCols && hostRows == t.hostRows {
+		t.mu.Unlock()
+		return
+	}
+	t.hostCols = hostCols
+	t.hostRows = hostRows
+
+	if t.options.AutoSize {
+		// Recalculate terminal size
+		borderOffset := 0
+		if t.options.BorderStyle != BorderNone {
+			borderOffset = 2
+		}
+		statusOffset := 0
+		if t.options.ShowStatusBar {
+			statusOffset = 1
+		}
+		cols := hostCols - t.options.OffsetX*2 - borderOffset
+		rows := hostRows - t.options.OffsetY*2 - borderOffset - statusOffset
+		if cols < 20 {
+			cols = 20
+		}
+		if rows < 5 {
+			rows = 5
+		}
+
+		t.buffer.Resize(cols, rows)
+		if t.pty != nil {
+			t.pty.Resize(cols, rows)
+		}
+		t.options.Cols = cols
+		t.options.Rows = rows
+	}
+	t.mu.Unlock()
+
+	// Force full redraw
+	t.renderer.ForceFullRedraw()
+
+	if t.onResize != nil {
+		t.onResize(t.options.Cols, t.options.Rows)
+	}
+}
+
+// IsEmbedded returns whether the terminal is running in embedded mode
+func (t *Terminal) IsEmbedded() bool {
+	return t.options.Embedded
+}
+
+// RenderToString returns the terminal's rendered output as an ANSI escape sequence string.
+// This is useful for embedded mode where the parent TUI needs to composite
+// the terminal with other widgets. The parent can write this string to stdout
+// at the appropriate time during its render cycle.
+func (t *Terminal) RenderToString() string {
+	return t.renderer.RenderToString()
+}
+
+// Renderer returns the terminal's renderer for advanced usage
+func (t *Terminal) Renderer() *Renderer {
+	return t.renderer
+}
+
+// SetOffset changes the terminal's position on screen (for embedded mode).
+// This allows dynamic repositioning without recreating the terminal.
+func (t *Terminal) SetOffset(x, y int) {
+	t.mu.Lock()
+	changed := t.options.OffsetX != x || t.options.OffsetY != y
+	t.options.OffsetX = x
+	t.options.OffsetY = y
+	t.mu.Unlock()
+
+	if changed {
+		t.renderer.ForceFullRedraw()
+	}
+}
+
+// GetOffset returns the terminal's current screen position
+func (t *Terminal) GetOffset() (x, y int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.options.OffsetX, t.options.OffsetY
+}
+
+// GetBounds returns the terminal's current position and size.
+// Returns offsetX, offsetY, columns, rows.
+func (t *Terminal) GetBounds() (x, y, cols, rows int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.options.OffsetX, t.options.OffsetY, t.options.Cols, t.options.Rows
+}
+
+// GetOuterSize returns the total size including border and status bar.
+// This is useful for layout calculations in a TUI toolkit.
+func (t *Terminal) GetOuterSize() (width, height int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	width = t.options.Cols
+	height = t.options.Rows
+
+	if t.options.BorderStyle != BorderNone {
+		width += 2  // Left and right border
+		height += 2 // Top and bottom border
+	}
+	if t.options.ShowStatusBar {
+		height += 1
+	}
+
+	return width, height
+}
+
+// GetMinSize returns the minimum usable terminal size.
+// The terminal enforces a minimum of 20 columns and 5 rows.
+func (t *Terminal) GetMinSize() (cols, rows int) {
+	return 20, 5
+}
+
+// GetMinOuterSize returns the minimum total size including border and status bar.
+func (t *Terminal) GetMinOuterSize() (width, height int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	width, height = 20, 5
+
+	if t.options.BorderStyle != BorderNone {
+		width += 2
+		height += 2
+	}
+	if t.options.ShowStatusBar {
+		height += 1
+	}
+
+	return width, height
+}
+
+// NeedsRender returns true if the terminal has pending changes to render.
+// Useful for TUI toolkits to optimize render cycles.
+func (t *Terminal) NeedsRender() bool {
+	return t.renderer.NeedsRender()
+}
+
+// SetClipRect sets a clipping rectangle for partial visibility.
+// Only cells within this rectangle will be rendered. This is useful when the
+// terminal is inside a scrollable container or partially obscured by other widgets.
+// The rectangle is in screen coordinates (same coordinate system as OffsetX/OffsetY).
+// Pass an empty/zero Rect to disable clipping.
+func (t *Terminal) SetClipRect(rect Rect) {
+	t.mu.Lock()
+	t.clipRect = rect
+	t.clipEnabled = !rect.IsEmpty()
+	t.mu.Unlock()
+	t.renderer.ForceFullRedraw()
+}
+
+// GetClipRect returns the current clipping rectangle, or an empty Rect if clipping is disabled.
+func (t *Terminal) GetClipRect() Rect {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.clipEnabled {
+		return t.clipRect
+	}
+	return Rect{}
+}
+
+// ClearClipRect disables clipping, allowing the full terminal to render.
+func (t *Terminal) ClearClipRect() {
+	t.mu.Lock()
+	t.clipEnabled = false
+	t.clipRect = Rect{}
+	t.mu.Unlock()
+	t.renderer.ForceFullRedraw()
+}
+
+// GetCells returns the terminal's content as a 2D grid of rendered cells.
+// This allows a TUI compositor to handle rendering and clipping directly.
+// The grid includes the terminal content (not border/status bar).
+// Returns cells[row][col] where row 0 is the top.
+func (t *Terminal) GetCells() [][]RenderedCell {
+	t.mu.Lock()
+	opts := t.options
+	buffer := t.buffer
+	t.mu.Unlock()
+
+	cols, rows := buffer.GetSize()
+	isDark := buffer.IsDarkTheme()
+
+	cells := make([][]RenderedCell, rows)
+	for y := 0; y < rows; y++ {
+		cells[y] = make([]RenderedCell, cols)
+		for x := 0; x < cols; x++ {
+			cell := buffer.GetVisibleCell(x, y)
+
+			// Resolve colors
+			fg := opts.Scheme.ResolveColor(cell.Foreground, true, isDark)
+			bg := opts.Scheme.ResolveColor(cell.Background, false, isDark)
+
+			// Handle reverse video
+			if cell.Reverse {
+				fg, bg = bg, fg
+			}
+
+			char := cell.Char
+			if char == 0 {
+				char = ' '
+			}
+
+			cells[y][x] = RenderedCell{
+				Char:      char,
+				Combining: cell.Combining,
+				Fg:        fg,
+				Bg:        bg,
+				Bold:      cell.Bold,
+				Italic:    cell.Italic,
+				Underline: cell.Underline,
+				Blink:     cell.Blink,
+				Reverse:   cell.Reverse,
+			}
+		}
+	}
+
+	return cells
+}
+
+// GetCellAt returns a single rendered cell at the given position.
+// Returns an empty cell if coordinates are out of bounds.
+func (t *Terminal) GetCellAt(col, row int) RenderedCell {
+	t.mu.Lock()
+	opts := t.options
+	buffer := t.buffer
+	t.mu.Unlock()
+
+	cols, rows := buffer.GetSize()
+	if col < 0 || col >= cols || row < 0 || row >= rows {
+		return RenderedCell{Char: ' '}
+	}
+
+	isDark := buffer.IsDarkTheme()
+	cell := buffer.GetVisibleCell(col, row)
+
+	fg := opts.Scheme.ResolveColor(cell.Foreground, true, isDark)
+	bg := opts.Scheme.ResolveColor(cell.Background, false, isDark)
+
+	if cell.Reverse {
+		fg, bg = bg, fg
+	}
+
+	char := cell.Char
+	if char == 0 {
+		char = ' '
+	}
+
+	return RenderedCell{
+		Char:      char,
+		Combining: cell.Combining,
+		Fg:        fg,
+		Bg:        bg,
+		Bold:      cell.Bold,
+		Italic:    cell.Italic,
+		Underline: cell.Underline,
+		Blink:     cell.Blink,
+		Reverse:   cell.Reverse,
+	}
+}
+
+// HandleKeyString processes a key event by name (for embedded mode).
+// Accepts key names in direct-key-handler format: "a", "Enter", "Up", "C-c", "M-x", "S-Tab", etc.
+// Returns true if the input was consumed.
+func (t *Terminal) HandleKeyString(key string) bool {
+	t.mu.Lock()
+	focused := t.focused
+	t.mu.Unlock()
+
+	if !focused {
+		return false
+	}
+
+	// Delegate to input handler
+	return t.input.handleKey(key)
+}
+
 // Stop stops the terminal and restores the original terminal state
 func (t *Terminal) Stop() error {
 	// Signal stop
@@ -593,10 +1005,11 @@ func (t *Terminal) Stop() error {
 		t.pty.Close()
 	}
 	oldState := t.oldState
+	embedded := t.options.Embedded
 	t.mu.Unlock()
 
-	// Restore terminal state
-	if oldState != nil {
+	// Restore terminal state (only in non-embedded mode)
+	if !embedded && oldState != nil {
 		// Disable alternate screen buffer
 		fmt.Print("\033[?1049l")
 
