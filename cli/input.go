@@ -2,387 +2,133 @@ package cli
 
 import (
 	"os"
-	"time"
+	"strings"
+
+	"github.com/phroun/direct-key-handler/keyboard"
 )
 
 // InputHandler manages keyboard input from the host terminal
 type InputHandler struct {
-	term          *Terminal
-	escapeBuffer  []byte
-	escapeTimeout time.Duration
-	lastEscape    time.Time
+	term     *Terminal
+	keyboard *keyboard.Handler
 }
-
-// Special key constants for internal handling
-const (
-	keyNone = iota
-	keyUp
-	keyDown
-	keyLeft
-	keyRight
-	keyHome
-	keyEnd
-	keyPageUp
-	keyPageDown
-	keyInsert
-	keyDelete
-	keyF1
-	keyF2
-	keyF3
-	keyF4
-	keyF5
-	keyF6
-	keyF7
-	keyF8
-	keyF9
-	keyF10
-	keyF11
-	keyF12
-)
-
-// Modifier flags
-const (
-	modShift = 1 << iota
-	modAlt
-	modCtrl
-)
 
 // NewInputHandler creates a new input handler
 func NewInputHandler(term *Terminal) *InputHandler {
 	return &InputHandler{
-		term:          term,
-		escapeBuffer:  make([]byte, 0, 32),
-		escapeTimeout: 50 * time.Millisecond,
+		term: term,
 	}
 }
 
-// InputLoop reads and processes input from stdin
+// InputLoop reads and processes input from stdin using direct-key-handler
 func (h *InputHandler) InputLoop() {
-	buf := make([]byte, 256)
+	// Create keyboard handler - don't manage terminal since we do that in Start()
+	manageTerminal := false
+	h.keyboard = keyboard.New(keyboard.Options{
+		InputReader:    os.Stdin,
+		ManageTerminal: &manageTerminal,
+	})
 
-	for {
-		select {
-		case <-h.term.stopRender:
-			return
-		default:
-		}
-
-		// Read with a timeout to handle escape sequences
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			return
-		}
-		if n == 0 {
-			continue
-		}
-
-		h.processInput(buf[:n])
+	// Set up key callback
+	h.keyboard.OnKey = func(key string) {
+		h.handleKey(key)
 	}
+
+	// Start the keyboard handler
+	if err := h.keyboard.Start(); err != nil {
+		return
+	}
+
+	// Wait for stop signal
+	<-h.term.stopRender
+
+	h.keyboard.Stop()
 }
 
-// processInput handles raw input bytes
+// processInput handles raw input bytes (for embedded mode)
 func (h *InputHandler) processInput(data []byte) {
-	for i := 0; i < len(data); {
-		b := data[i]
-
-		// Check for escape sequence start
-		if b == 0x1b { // ESC
-			// Collect escape sequence
-			h.escapeBuffer = append(h.escapeBuffer[:0], b)
-			h.lastEscape = time.Now()
-			i++
-
-			// Try to read more of the sequence
-			for i < len(data) && len(h.escapeBuffer) < 32 {
-				h.escapeBuffer = append(h.escapeBuffer, data[i])
-				i++
-
-				// Check if we have a complete sequence
-				key, mods, consumed, passthrough := h.parseEscapeSequence(h.escapeBuffer)
-				if consumed > 0 {
-					if passthrough != nil {
-						// This sequence should be passed through to the PTY
-						h.sendToPTY(passthrough)
-					} else if key != keyNone {
-						// Handle special key
-						h.handleSpecialKey(key, mods)
-					}
-					// Reset buffer
-					h.escapeBuffer = h.escapeBuffer[:0]
-					break
-				}
-			}
-
-			// If we still have an incomplete sequence after processing all data,
-			// wait briefly for more input or treat as standalone ESC
-			if len(h.escapeBuffer) > 0 {
-				if len(h.escapeBuffer) == 1 {
-					// Just ESC - pass it through
-					h.sendToPTY([]byte{0x1b})
-				} else {
-					// Incomplete sequence - pass through as-is
-					h.sendToPTY(h.escapeBuffer)
-				}
-				h.escapeBuffer = h.escapeBuffer[:0]
-			}
-		} else {
-			// Regular character
-			h.handleRegularInput(b)
-			i++
-		}
-	}
+	// In embedded mode, we receive raw bytes from the parent TUI
+	// We need to parse them through the keyboard handler
+	// For now, just send directly to PTY and let it handle escape sequences
+	h.sendToPTY(data)
 }
 
-// parseEscapeSequence attempts to parse an escape sequence
-// Returns: key code, modifiers, bytes consumed, passthrough bytes (if should be sent to PTY as-is)
-func (h *InputHandler) parseEscapeSequence(seq []byte) (key int, mods int, consumed int, passthrough []byte) {
-	if len(seq) < 2 {
-		return keyNone, 0, 0, nil
-	}
-
-	// CSI sequences: ESC [
-	if seq[1] == '[' {
-		return h.parseCSISequence(seq)
-	}
-
-	// SS3 sequences: ESC O (for some function keys)
-	if seq[1] == 'O' {
-		return h.parseSS3Sequence(seq)
-	}
-
-	// Alt+key: ESC followed by regular character
-	if len(seq) == 2 && seq[1] >= 0x20 && seq[1] < 0x7f {
-		// Pass through Alt+key to PTY
-		return keyNone, modAlt, 2, seq
-	}
-
-	return keyNone, 0, 0, nil
-}
-
-// parseCSISequence parses CSI (ESC [) sequences
-func (h *InputHandler) parseCSISequence(seq []byte) (key int, mods int, consumed int, passthrough []byte) {
-	if len(seq) < 3 {
-		return keyNone, 0, 0, nil
-	}
-
-	// Check for terminal character
-	lastByte := seq[len(seq)-1]
-
-	// Standard CSI sequences end with a letter
-	if lastByte >= 'A' && lastByte <= 'Z' || lastByte == '~' {
-		switch lastByte {
-		case 'A': // Up
-			key = keyUp
-		case 'B': // Down
-			key = keyDown
-		case 'C': // Right
-			key = keyRight
-		case 'D': // Left
-			key = keyLeft
-		case 'H': // Home
-			key = keyHome
-		case 'F': // End
-			key = keyEnd
-		case '~':
-			// Check parameter for specific keys
-			if len(seq) >= 4 {
-				switch seq[2] {
-				case '1': // Home (some terminals)
-					key = keyHome
-				case '2': // Insert
-					key = keyInsert
-				case '3': // Delete
-					key = keyDelete
-				case '4': // End (some terminals)
-					key = keyEnd
-				case '5': // PageUp
-					key = keyPageUp
-				case '6': // PageDown
-					key = keyPageDown
-				}
-
-				// Function keys: 11-24~ for F1-F12
-				if len(seq) >= 5 && seq[2] == '1' {
-					switch seq[3] {
-					case '1':
-						key = keyF1
-					case '2':
-						key = keyF2
-					case '3':
-						key = keyF3
-					case '4':
-						key = keyF4
-					case '5':
-						key = keyF5
-					case '7':
-						key = keyF6
-					case '8':
-						key = keyF7
-					case '9':
-						key = keyF8
-					}
-				}
-				if len(seq) >= 5 && seq[2] == '2' {
-					switch seq[3] {
-					case '0':
-						key = keyF9
-					case '1':
-						key = keyF10
-					case '3':
-						key = keyF11
-					case '4':
-						key = keyF12
-					}
-				}
-			}
-		}
-
-		// Check for modifiers in extended format: ESC [ 1 ; <mod> <key>
-		if len(seq) >= 6 && seq[2] == '1' && seq[3] == ';' {
-			modByte := seq[4]
-			if modByte >= '2' && modByte <= '8' {
-				modNum := int(modByte - '1')
-				if modNum&1 != 0 {
-					mods |= modShift
-				}
-				if modNum&2 != 0 {
-					mods |= modAlt
-				}
-				if modNum&4 != 0 {
-					mods |= modCtrl
-				}
-			}
-		}
-
-		consumed = len(seq)
-
-		// Determine if this should be handled locally or passed through
-		if h.shouldHandleLocally(key, mods) {
-			return key, mods, consumed, nil
-		}
-		return keyNone, 0, consumed, seq
-	}
-
-	// Check for incomplete sequence (no terminator yet)
-	if lastByte >= '0' && lastByte <= '9' || lastByte == ';' {
-		return keyNone, 0, 0, nil // Need more data
-	}
-
-	// Unknown sequence - pass through
-	return keyNone, 0, len(seq), seq
-}
-
-// parseSS3Sequence parses SS3 (ESC O) sequences
-func (h *InputHandler) parseSS3Sequence(seq []byte) (key int, mods int, consumed int, passthrough []byte) {
-	if len(seq) < 3 {
-		return keyNone, 0, 0, nil
-	}
-
-	switch seq[2] {
-	case 'A':
-		key = keyUp
-	case 'B':
-		key = keyDown
-	case 'C':
-		key = keyRight
-	case 'D':
-		key = keyLeft
-	case 'H':
-		key = keyHome
-	case 'F':
-		key = keyEnd
-	case 'P':
-		key = keyF1
-	case 'Q':
-		key = keyF2
-	case 'R':
-		key = keyF3
-	case 'S':
-		key = keyF4
-	default:
-		// Unknown - pass through
-		return keyNone, 0, 3, seq[:3]
-	}
-
-	consumed = 3
-	if h.shouldHandleLocally(key, mods) {
-		return key, mods, consumed, nil
-	}
-	return keyNone, 0, consumed, seq[:3]
-}
-
-// shouldHandleLocally determines if a key should be handled by the CLI adapter
-// rather than passed to the child process
-func (h *InputHandler) shouldHandleLocally(key int, mods int) bool {
-	// Shift+PageUp/PageDown for scrollback navigation
-	if mods&modShift != 0 {
-		switch key {
-		case keyPageUp, keyPageDown, keyUp, keyDown, keyHome, keyEnd:
-			return true
-		}
-	}
-
-	// Ctrl+Shift+C/V for copy/paste could be handled here
-	// For now, just scrollback navigation
-
-	return false
-}
-
-// handleSpecialKey handles keys that are processed by the CLI adapter
-func (h *InputHandler) handleSpecialKey(key int, mods int) {
-	if mods&modShift != 0 {
-		switch key {
-		case keyPageUp:
-			// Scroll up one page
-			_, rows := h.term.buffer.GetSize()
-			h.term.ScrollUp(rows - 1)
-			h.term.renderer.RequestRender()
-		case keyPageDown:
-			// Scroll down one page
-			_, rows := h.term.buffer.GetSize()
-			h.term.ScrollDown(rows - 1)
-			h.term.renderer.RequestRender()
-		case keyUp:
-			// Scroll up one line
-			h.term.ScrollUp(1)
-			h.term.renderer.RequestRender()
-		case keyDown:
-			// Scroll down one line
-			h.term.ScrollDown(1)
-			h.term.renderer.RequestRender()
-		case keyHome:
-			// Scroll to top
-			h.term.ScrollToTop()
-			h.term.renderer.RequestRender()
-		case keyEnd:
-			// Scroll to bottom
-			h.term.ScrollToBottom()
-			h.term.renderer.RequestRender()
-		}
-	}
-}
-
-// handleRegularInput handles regular (non-escape) input
-func (h *InputHandler) handleRegularInput(b byte) {
-	// Check for input callback
+// handleKey processes a parsed key event from direct-key-handler
+func (h *InputHandler) handleKey(key string) {
+	// Check for input callback first
 	h.term.mu.Lock()
 	callback := h.term.inputCallback
 	h.term.mu.Unlock()
 
-	if callback != nil {
-		if callback([]byte{b}) {
+	// Convert key to bytes for the callback
+	keyBytes := keyToBytes(key)
+	if callback != nil && len(keyBytes) > 0 {
+		if callback(keyBytes) {
 			return // Consumed by callback
 		}
 	}
 
-	// Scroll to bottom on any input
+	// Check if this key should be handled locally (scrollback navigation)
+	if h.handleLocalKey(key) {
+		return
+	}
+
+	// Scroll to bottom on any input (except scrollback keys)
 	if h.term.GetScrollOffset() > 0 {
 		h.term.ScrollToBottom()
 		h.term.renderer.RequestRender()
 	}
 
-	// Send to PTY
-	h.sendToPTY([]byte{b})
+	// Convert key to bytes and send to PTY
+	if len(keyBytes) > 0 {
+		h.sendToPTY(keyBytes)
+	}
+}
+
+// handleLocalKey handles keys that are processed by the CLI adapter locally
+// Returns true if the key was handled
+func (h *InputHandler) handleLocalKey(key string) bool {
+	switch key {
+	case "S-PageUp":
+		// Scroll up one page
+		_, rows := h.term.buffer.GetSize()
+		h.term.ScrollUp(rows - 1)
+		h.term.renderer.RequestRender()
+		return true
+
+	case "S-PageDown":
+		// Scroll down one page
+		_, rows := h.term.buffer.GetSize()
+		h.term.ScrollDown(rows - 1)
+		h.term.renderer.RequestRender()
+		return true
+
+	case "S-Up":
+		// Scroll up one line
+		h.term.ScrollUp(1)
+		h.term.renderer.RequestRender()
+		return true
+
+	case "S-Down":
+		// Scroll down one line
+		h.term.ScrollDown(1)
+		h.term.renderer.RequestRender()
+		return true
+
+	case "S-Home":
+		// Scroll to top
+		h.term.ScrollToTop()
+		h.term.renderer.RequestRender()
+		return true
+
+	case "S-End":
+		// Scroll to bottom
+		h.term.ScrollToBottom()
+		h.term.renderer.RequestRender()
+		return true
+	}
+
+	return false
 }
 
 // sendToPTY sends data to the child process
@@ -394,6 +140,102 @@ func (h *InputHandler) sendToPTY(data []byte) {
 	if pty != nil {
 		pty.Write(data)
 	}
+}
+
+// keyToBytes converts a key name from direct-key-handler to bytes for PTY
+func keyToBytes(key string) []byte {
+	// Check special keys first
+	if bytes, ok := keyToBytesMap[key]; ok {
+		return bytes
+	}
+
+	// Control keys: ^A through ^Z
+	if len(key) == 2 && key[0] == '^' {
+		ch := key[1]
+		if ch >= 'A' && ch <= 'Z' {
+			return []byte{ch - 'A' + 1}
+		}
+		if ch >= 'a' && ch <= 'z' {
+			return []byte{ch - 'a' + 1}
+		}
+		if ch == '@' {
+			return []byte{0}
+		}
+		if ch == '[' {
+			return []byte{27}
+		}
+		if ch == '\\' {
+			return []byte{28}
+		}
+		if ch == ']' {
+			return []byte{29}
+		}
+		if ch == '^' {
+			return []byte{30}
+		}
+		if ch == '_' {
+			return []byte{31}
+		}
+	}
+
+	// Alt+key: M-x
+	if strings.HasPrefix(key, "M-") && len(key) == 3 {
+		return []byte{0x1b, key[2]}
+	}
+
+	// Regular character (including UTF-8)
+	if len(key) >= 1 && key[0] != '^' && !strings.Contains(key, "-") {
+		return []byte(key)
+	}
+
+	return nil
+}
+
+// keyToBytesMap maps key names to their byte sequences
+var keyToBytesMap = map[string][]byte{
+	// Control keys
+	"Enter":     {13},
+	"Tab":       {9},
+	"Backspace": {127}, // Most terminals send DEL for backspace
+	"Escape":    {27},
+
+	// Arrow keys
+	"Up":    {0x1b, '[', 'A'},
+	"Down":  {0x1b, '[', 'B'},
+	"Right": {0x1b, '[', 'C'},
+	"Left":  {0x1b, '[', 'D'},
+
+	// Modified arrow keys (for applications that understand them)
+	"C-Up":    {0x1b, '[', '1', ';', '5', 'A'},
+	"C-Down":  {0x1b, '[', '1', ';', '5', 'B'},
+	"C-Right": {0x1b, '[', '1', ';', '5', 'C'},
+	"C-Left":  {0x1b, '[', '1', ';', '5', 'D'},
+	"M-Up":    {0x1b, '[', '1', ';', '3', 'A'},
+	"M-Down":  {0x1b, '[', '1', ';', '3', 'B'},
+	"M-Right": {0x1b, '[', '1', ';', '3', 'C'},
+	"M-Left":  {0x1b, '[', '1', ';', '3', 'D'},
+
+	// Navigation keys
+	"Home":     {0x1b, '[', 'H'},
+	"End":      {0x1b, '[', 'F'},
+	"Insert":   {0x1b, '[', '2', '~'},
+	"Delete":   {0x1b, '[', '3', '~'},
+	"PageUp":   {0x1b, '[', '5', '~'},
+	"PageDown": {0x1b, '[', '6', '~'},
+
+	// Function keys
+	"F1":  {0x1b, 'O', 'P'},
+	"F2":  {0x1b, 'O', 'Q'},
+	"F3":  {0x1b, 'O', 'R'},
+	"F4":  {0x1b, 'O', 'S'},
+	"F5":  {0x1b, '[', '1', '5', '~'},
+	"F6":  {0x1b, '[', '1', '7', '~'},
+	"F7":  {0x1b, '[', '1', '8', '~'},
+	"F8":  {0x1b, '[', '1', '9', '~'},
+	"F9":  {0x1b, '[', '2', '0', '~'},
+	"F10": {0x1b, '[', '2', '1', '~'},
+	"F11": {0x1b, '[', '2', '3', '~'},
+	"F12": {0x1b, '[', '2', '4', '~'},
 }
 
 // HandleMouseInput processes mouse events (if mouse tracking is enabled)
