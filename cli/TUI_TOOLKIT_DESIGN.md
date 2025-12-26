@@ -523,6 +523,19 @@ func (t *Terminal) NeedsRender() bool                     // Check dirty flag
 func (t *Terminal) Renderer() *Renderer                   // Access renderer directly
 ```
 
+### Clipping (for scrollable containers)
+```go
+func (t *Terminal) SetClipRect(rect Rect)                 // Set visible area
+func (t *Terminal) GetClipRect() Rect                     // Get clip rectangle
+func (t *Terminal) ClearClipRect()                        // Disable clipping
+```
+
+### Cell Access (for compositor-based rendering)
+```go
+func (t *Terminal) GetCells() [][]RenderedCell            // Get 2D cell grid
+func (t *Terminal) GetCellAt(col, row int) RenderedCell   // Get single cell
+```
+
 ### Lifecycle
 ```go
 func (t *Terminal) Start() error                          // Start (render loop only in embedded)
