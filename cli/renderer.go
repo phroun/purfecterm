@@ -312,8 +312,12 @@ func (r *Renderer) Render() {
 	// Reset attributes
 	r.output.WriteString("\033[0m")
 
-	// Position and show cursor if visible and not scrolled
-	if cursorVisible && scrollOffset == 0 {
+	// Position and show cursor if visible, not scrolled, and focused
+	r.term.mu.Lock()
+	focused := r.term.focused
+	r.term.mu.Unlock()
+
+	if cursorVisible && scrollOffset == 0 && focused {
 		r.output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+cursorY+1, contentStartX+cursorX+1))
 		r.output.WriteString("\033[?25h")
 	}
@@ -435,4 +439,272 @@ func (r *Renderer) ForceFullRedraw() {
 	r.lastCells = nil
 	r.renderNeeded = true
 	r.mu.Unlock()
+}
+
+// RenderToString renders the terminal and returns the ANSI escape sequence string
+// instead of writing to stdout. This is useful for embedded mode where the parent
+// TUI needs to composite the terminal with other widgets.
+// Note: This always performs a full render (no differential optimization).
+func (r *Renderer) RenderToString() string {
+	r.term.mu.Lock()
+	opts := r.term.options
+	buffer := r.term.buffer
+	focused := r.term.focused
+	r.term.mu.Unlock()
+
+	cols, rows := buffer.GetSize()
+	cursorX, cursorY := buffer.GetCursor()
+	cursorVisible := buffer.IsCursorVisible()
+	isDark := buffer.IsDarkTheme()
+	scrollOffset := buffer.GetScrollOffset()
+
+	// Calculate window position
+	startX := opts.OffsetX
+	startY := opts.OffsetY
+
+	// Account for border
+	contentStartX := startX
+	contentStartY := startY
+	if opts.BorderStyle != BorderNone {
+		contentStartX++
+		contentStartY++
+	}
+
+	// Use a local buffer
+	var output strings.Builder
+
+	// Hide cursor during rendering to prevent flicker
+	output.WriteString("\033[?25l")
+
+	// Draw border if configured
+	if opts.BorderStyle != BorderNone {
+		r.renderBorderTo(&output, startX, startY, cols, rows, opts.Title, scrollOffset)
+	}
+
+	// Current attributes for SGR optimization
+	var currentFg, currentBg purfecterm.Color
+	currentBold := false
+	currentItalic := false
+	currentUnderline := false
+	currentReverse := false
+	currentBlink := false
+	currentStrikethrough := false
+	firstAttr := true
+
+	// Render each cell
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			cell := buffer.GetVisibleCell(x, y)
+
+			// Resolve colors based on theme
+			fg := opts.Scheme.ResolveColor(cell.Foreground, true, isDark)
+			bg := opts.Scheme.ResolveColor(cell.Background, false, isDark)
+
+			// Handle reverse video
+			if cell.Reverse {
+				fg, bg = bg, fg
+			}
+
+			// Move cursor to position
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+y+1, contentStartX+x+1))
+
+			// Build SGR sequence for attributes
+			var sgr []string
+
+			// Check if we need to reset
+			needsReset := false
+			if !firstAttr {
+				if (currentBold && !cell.Bold) ||
+					(currentItalic && !cell.Italic) ||
+					(currentUnderline && !cell.Underline) ||
+					(currentReverse && !cell.Reverse) ||
+					(currentBlink && !cell.Blink) ||
+					(currentStrikethrough && !cell.Strikethrough) {
+					needsReset = true
+				}
+			}
+
+			if needsReset || firstAttr {
+				sgr = append(sgr, "0") // Reset
+				currentBold = false
+				currentItalic = false
+				currentUnderline = false
+				currentReverse = false
+				currentBlink = false
+				currentStrikethrough = false
+				currentFg = purfecterm.Color{}
+				currentBg = purfecterm.Color{}
+			}
+			firstAttr = false
+
+			// Add attributes
+			if cell.Bold && !currentBold {
+				sgr = append(sgr, "1")
+				currentBold = true
+			}
+			if cell.Italic && !currentItalic {
+				sgr = append(sgr, "3")
+				currentItalic = true
+			}
+			if cell.Underline && !currentUnderline {
+				sgr = append(sgr, "4")
+				currentUnderline = true
+			}
+			if cell.Blink && !currentBlink {
+				sgr = append(sgr, "5")
+				currentBlink = true
+			}
+			if cell.Strikethrough && !currentStrikethrough {
+				sgr = append(sgr, "9")
+				currentStrikethrough = true
+			}
+
+			// Add colors
+			if fg != currentFg {
+				sgr = append(sgr, fg.ToSGRCode(true))
+				currentFg = fg
+			}
+			if bg != currentBg {
+				sgr = append(sgr, bg.ToSGRCode(false))
+				currentBg = bg
+			}
+
+			// Write SGR sequence if needed
+			if len(sgr) > 0 {
+				output.WriteString("\033[")
+				output.WriteString(strings.Join(sgr, ";"))
+				output.WriteString("m")
+			}
+
+			// Write character
+			if cell.Char == 0 || cell.Char == ' ' {
+				output.WriteRune(' ')
+			} else {
+				output.WriteRune(cell.Char)
+				if cell.Combining != "" {
+					output.WriteString(cell.Combining)
+				}
+			}
+		}
+	}
+
+	// Render status bar if configured
+	if opts.ShowStatusBar {
+		r.renderStatusBarTo(&output, startX, contentStartY+rows, cols, scrollOffset)
+	}
+
+	// Reset attributes
+	output.WriteString("\033[0m")
+
+	// Position and show cursor if visible, not scrolled, and focused
+	if cursorVisible && scrollOffset == 0 && focused {
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+cursorY+1, contentStartX+cursorX+1))
+		output.WriteString("\033[?25h")
+	}
+
+	return output.String()
+}
+
+// renderBorderTo draws the border to a specific output buffer
+func (r *Renderer) renderBorderTo(output *strings.Builder, x, y, innerCols, innerRows int, title string, scrollOffset int) {
+	bc := r.borderChars
+	totalWidth := innerCols + 2
+
+	// Top border
+	output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, x+1))
+	output.WriteString("\033[0m") // Reset attributes
+
+	output.WriteRune(bc.topLeft)
+
+	// Title in top border
+	if title != "" && len(title) < innerCols-4 {
+		padding := (innerCols - len(title) - 2) / 2
+		for i := 0; i < padding; i++ {
+			output.WriteRune(bc.horizontal)
+		}
+		output.WriteRune(bc.titleRight)
+		output.WriteString(" ")
+		output.WriteString(title)
+		output.WriteString(" ")
+		output.WriteRune(bc.titleLeft)
+		remaining := innerCols - padding - len(title) - 4
+		for i := 0; i < remaining; i++ {
+			output.WriteRune(bc.horizontal)
+		}
+	} else {
+		for i := 0; i < innerCols; i++ {
+			output.WriteRune(bc.horizontal)
+		}
+	}
+	output.WriteRune(bc.topRight)
+
+	// Side borders
+	for row := 0; row < innerRows; row++ {
+		// Left border
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", y+row+2, x+1))
+		output.WriteRune(bc.vertical)
+
+		// Right border with optional scrollbar
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", y+row+2, x+totalWidth))
+		if scrollOffset > 0 {
+			// Show scrollbar indicator
+			maxScroll := r.term.buffer.GetMaxScrollOffset()
+			if maxScroll > 0 {
+				scrollPos := float64(maxScroll-scrollOffset) / float64(maxScroll)
+				thumbPos := int(scrollPos * float64(innerRows-1))
+				if row == thumbPos {
+					output.WriteString("\033[7m") // Reverse video
+					output.WriteRune(bc.vertical)
+					output.WriteString("\033[27m") // Normal video
+				} else {
+					output.WriteRune(bc.vertical)
+				}
+			} else {
+				output.WriteRune(bc.vertical)
+			}
+		} else {
+			output.WriteRune(bc.vertical)
+		}
+	}
+
+	// Bottom border
+	output.WriteString(fmt.Sprintf("\033[%d;%dH", y+innerRows+2, x+1))
+	output.WriteRune(bc.bottomLeft)
+	for i := 0; i < innerCols; i++ {
+		output.WriteRune(bc.horizontal)
+	}
+	output.WriteRune(bc.bottomRight)
+}
+
+// renderStatusBarTo draws the status bar to a specific output buffer
+func (r *Renderer) renderStatusBarTo(output *strings.Builder, x, y, width int, scrollOffset int) {
+	output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, x+1))
+
+	// Status bar style: reversed colors
+	output.WriteString("\033[7m")
+
+	cols, rows := r.term.buffer.GetSize()
+	cursorX, cursorY := r.term.buffer.GetCursor()
+
+	// Build status text
+	var status string
+	if scrollOffset > 0 {
+		maxScroll := r.term.buffer.GetMaxScrollOffset()
+		percent := 100 - (scrollOffset * 100 / maxScroll)
+		status = fmt.Sprintf(" [%d%%] Lines: %d | Cursor: %d,%d | Size: %dx%d ",
+			percent, r.term.buffer.GetScrollbackSize(), cursorX+1, cursorY+1, cols, rows)
+	} else {
+		status = fmt.Sprintf(" Lines: %d | Cursor: %d,%d | Size: %dx%d ",
+			r.term.buffer.GetScrollbackSize(), cursorX+1, cursorY+1, cols, rows)
+	}
+
+	// Pad to full width
+	if len(status) < width {
+		status = status + strings.Repeat(" ", width-len(status))
+	} else if len(status) > width {
+		status = status[:width]
+	}
+
+	output.WriteString(status)
+	output.WriteString("\033[27m") // End reverse video
 }

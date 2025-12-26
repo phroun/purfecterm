@@ -63,6 +63,14 @@ type Options struct {
 
 	// If true, render a status bar at the bottom
 	ShowStatusBar bool
+
+	// Embedded mode: when true, the terminal acts as a widget within a larger TUI.
+	// It will NOT enter raw mode, switch to alternate screen, or start its own input loop.
+	// The parent application is responsible for:
+	//   - Managing raw mode for the host terminal
+	//   - Calling HandleInput() to send keystrokes when focused
+	//   - Calling Render() or RenderToString() to display the terminal
+	Embedded bool
 }
 
 // Terminal is a complete terminal emulator running within a CLI terminal
@@ -91,6 +99,11 @@ type Terminal struct {
 	// Actual terminal size
 	hostCols int
 	hostRows int
+
+	// Focus state for embedded mode
+	focused  bool
+	onFocus  func(bool) // Called when focus state changes
+	onBell   func()     // Called when bell is triggered (for parent TUI notification)
 
 	// Callbacks
 	onExit   func(int)            // Called when child process exits with exit code
@@ -159,6 +172,7 @@ func New(opts Options) (*Terminal, error) {
 		stopRender: make(chan struct{}),
 		hostCols:   hostCols,
 		hostRows:   hostRows,
+		focused:    !opts.Embedded, // Non-embedded terminals are always focused
 	}
 
 	// Create renderer
@@ -184,35 +198,39 @@ func getHostTerminalSize() (cols, rows int) {
 	return cols, rows
 }
 
-// Start initializes the terminal, enters raw mode, and starts rendering
+// Start initializes the terminal, enters raw mode, and starts rendering.
+// In embedded mode, this only starts the render loop; the parent TUI is responsible
+// for raw mode and input handling.
 func (t *Terminal) Start() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Enter raw mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to enter raw mode: %w", err)
+	if !t.options.Embedded {
+		// Enter raw mode
+		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("failed to enter raw mode: %w", err)
+		}
+		t.oldState = oldState
+
+		// Hide host cursor
+		fmt.Print("\033[?25l")
+
+		// Enable alternate screen buffer
+		fmt.Print("\033[?1049h")
+
+		// Clear screen
+		fmt.Print("\033[2J\033[H")
+
+		// Set up SIGWINCH handler for terminal resize
+		go t.handleSIGWINCH()
+
+		// Start input loop (only in non-embedded mode)
+		go t.input.InputLoop()
 	}
-	t.oldState = oldState
-
-	// Hide host cursor
-	fmt.Print("\033[?25l")
-
-	// Enable alternate screen buffer
-	fmt.Print("\033[?1049h")
-
-	// Clear screen
-	fmt.Print("\033[2J\033[H")
-
-	// Set up SIGWINCH handler for terminal resize
-	go t.handleSIGWINCH()
 
 	// Start render loop
 	go t.renderer.RenderLoop()
-
-	// Start input loop
-	go t.input.InputLoop()
 
 	return nil
 }
@@ -579,6 +597,137 @@ func (t *Terminal) SetColorScheme(scheme purfecterm.ColorScheme) {
 	t.renderer.RequestRender()
 }
 
+// SetFocused sets the focus state of the terminal (for embedded mode).
+// When focused, the terminal will process input and show its cursor.
+// When unfocused, input is ignored and the cursor is hidden.
+func (t *Terminal) SetFocused(focused bool) {
+	t.mu.Lock()
+	changed := t.focused != focused
+	t.focused = focused
+	callback := t.onFocus
+	t.mu.Unlock()
+
+	if changed {
+		t.renderer.RequestRender()
+		if callback != nil {
+			callback(focused)
+		}
+	}
+}
+
+// IsFocused returns whether the terminal currently has focus
+func (t *Terminal) IsFocused() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.focused
+}
+
+// SetOnFocus sets a callback for focus state changes
+func (t *Terminal) SetOnFocus(fn func(focused bool)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onFocus = fn
+}
+
+// SetOnBell sets a callback for when the terminal bell is triggered.
+// Useful for parent TUI to show visual notification when terminal needs attention.
+func (t *Terminal) SetOnBell(fn func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onBell = fn
+}
+
+// HandleInput processes input from the parent TUI (for embedded mode).
+// The parent TUI should call this method when the terminal has focus and
+// receives keyboard input. Returns true if the input was consumed.
+func (t *Terminal) HandleInput(data []byte) bool {
+	t.mu.Lock()
+	focused := t.focused
+	callback := t.inputCallback
+	t.mu.Unlock()
+
+	// Ignore input when not focused
+	if !focused {
+		return false
+	}
+
+	// Check for input callback first
+	if callback != nil {
+		if callback(data) {
+			return true // Consumed by callback
+		}
+	}
+
+	// Process through the input handler
+	t.input.processInput(data)
+	return true
+}
+
+// HandleResize notifies the terminal of a host terminal resize (for embedded mode).
+// The parent TUI should call this when it detects a resize.
+func (t *Terminal) HandleResize(hostCols, hostRows int) {
+	t.mu.Lock()
+	if hostCols == t.hostCols && hostRows == t.hostRows {
+		t.mu.Unlock()
+		return
+	}
+	t.hostCols = hostCols
+	t.hostRows = hostRows
+
+	if t.options.AutoSize {
+		// Recalculate terminal size
+		borderOffset := 0
+		if t.options.BorderStyle != BorderNone {
+			borderOffset = 2
+		}
+		statusOffset := 0
+		if t.options.ShowStatusBar {
+			statusOffset = 1
+		}
+		cols := hostCols - t.options.OffsetX*2 - borderOffset
+		rows := hostRows - t.options.OffsetY*2 - borderOffset - statusOffset
+		if cols < 20 {
+			cols = 20
+		}
+		if rows < 5 {
+			rows = 5
+		}
+
+		t.buffer.Resize(cols, rows)
+		if t.pty != nil {
+			t.pty.Resize(cols, rows)
+		}
+		t.options.Cols = cols
+		t.options.Rows = rows
+	}
+	t.mu.Unlock()
+
+	// Force full redraw
+	t.renderer.ForceFullRedraw()
+
+	if t.onResize != nil {
+		t.onResize(t.options.Cols, t.options.Rows)
+	}
+}
+
+// IsEmbedded returns whether the terminal is running in embedded mode
+func (t *Terminal) IsEmbedded() bool {
+	return t.options.Embedded
+}
+
+// RenderToString returns the terminal's rendered output as an ANSI escape sequence string.
+// This is useful for embedded mode where the parent TUI needs to composite
+// the terminal with other widgets. The parent can write this string to stdout
+// at the appropriate time during its render cycle.
+func (t *Terminal) RenderToString() string {
+	return t.renderer.RenderToString()
+}
+
+// Renderer returns the terminal's renderer for advanced usage
+func (t *Terminal) Renderer() *Renderer {
+	return t.renderer
+}
+
 // Stop stops the terminal and restores the original terminal state
 func (t *Terminal) Stop() error {
 	// Signal stop
@@ -593,10 +742,11 @@ func (t *Terminal) Stop() error {
 		t.pty.Close()
 	}
 	oldState := t.oldState
+	embedded := t.options.Embedded
 	t.mu.Unlock()
 
-	// Restore terminal state
-	if oldState != nil {
+	// Restore terminal state (only in non-embedded mode)
+	if !embedded && oldState != nil {
 		// Disable alternate screen buffer
 		fmt.Print("\033[?1049l")
 
