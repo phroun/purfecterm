@@ -452,11 +452,14 @@ func (r *Renderer) NeedsRender() bool {
 // instead of writing to stdout. This is useful for embedded mode where the parent
 // TUI needs to composite the terminal with other widgets.
 // Note: This always performs a full render (no differential optimization).
+// If a clip rectangle is set, only cells within that rectangle are rendered.
 func (r *Renderer) RenderToString() string {
 	r.term.mu.Lock()
 	opts := r.term.options
 	buffer := r.term.buffer
 	focused := r.term.focused
+	clipEnabled := r.term.clipEnabled
+	clipRect := r.term.clipRect
 	r.term.mu.Unlock()
 
 	cols, rows := buffer.GetSize()
@@ -483,9 +486,13 @@ func (r *Renderer) RenderToString() string {
 	// Hide cursor during rendering to prevent flicker
 	output.WriteString("\033[?25l")
 
-	// Draw border if configured
+	// Draw border if configured (only visible parts if clipping)
 	if opts.BorderStyle != BorderNone {
-		r.renderBorderTo(&output, startX, startY, cols, rows, opts.Title, scrollOffset)
+		if clipEnabled {
+			r.renderBorderToClipped(&output, startX, startY, cols, rows, opts.Title, scrollOffset, clipRect)
+		} else {
+			r.renderBorderTo(&output, startX, startY, cols, rows, opts.Title, scrollOffset)
+		}
 	}
 
 	// Current attributes for SGR optimization
@@ -501,6 +508,13 @@ func (r *Renderer) RenderToString() string {
 	// Render each cell
 	for y := 0; y < rows; y++ {
 		for x := 0; x < cols; x++ {
+			// Check clipping - screen coordinates are 1-based for ANSI
+			screenX := contentStartX + x + 1
+			screenY := contentStartY + y + 1
+			if clipEnabled && !clipRect.Contains(screenX-1, screenY-1) {
+				continue // Skip cells outside clip rectangle
+			}
+
 			cell := buffer.GetVisibleCell(x, y)
 
 			// Resolve colors based on theme
@@ -513,7 +527,7 @@ func (r *Renderer) RenderToString() string {
 			}
 
 			// Move cursor to position
-			output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+y+1, contentStartX+x+1))
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", screenY, screenX))
 
 			// Build SGR sequence for attributes
 			var sgr []string
@@ -595,18 +609,29 @@ func (r *Renderer) RenderToString() string {
 		}
 	}
 
-	// Render status bar if configured
+	// Render status bar if configured (check clipping)
 	if opts.ShowStatusBar {
-		r.renderStatusBarTo(&output, startX, contentStartY+rows, cols, scrollOffset)
+		statusY := contentStartY + rows
+		if !clipEnabled || (statusY >= clipRect.Y && statusY < clipRect.Y+clipRect.Height) {
+			if clipEnabled {
+				r.renderStatusBarToClipped(&output, startX, statusY, cols, scrollOffset, clipRect)
+			} else {
+				r.renderStatusBarTo(&output, startX, statusY, cols, scrollOffset)
+			}
+		}
 	}
 
 	// Reset attributes
 	output.WriteString("\033[0m")
 
-	// Position and show cursor if visible, not scrolled, and focused
+	// Position and show cursor if visible, not scrolled, focused, and within clip
 	if cursorVisible && scrollOffset == 0 && focused {
-		output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+cursorY+1, contentStartX+cursorX+1))
-		output.WriteString("\033[?25h")
+		cursorScreenX := contentStartX + cursorX
+		cursorScreenY := contentStartY + cursorY
+		if !clipEnabled || clipRect.Contains(cursorScreenX, cursorScreenY) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", cursorScreenY+1, cursorScreenX+1))
+			output.WriteString("\033[?25h")
+		}
 	}
 
 	return output.String()
@@ -713,5 +738,110 @@ func (r *Renderer) renderStatusBarTo(output *strings.Builder, x, y, width int, s
 	}
 
 	output.WriteString(status)
+	output.WriteString("\033[27m") // End reverse video
+}
+
+// renderBorderToClipped draws the border with clipping
+func (r *Renderer) renderBorderToClipped(output *strings.Builder, x, y, innerCols, innerRows int, title string, scrollOffset int, clip Rect) {
+	bc := r.borderChars
+	totalWidth := innerCols + 2
+
+	// Helper to check if screen position is within clip
+	inClip := func(screenX, screenY int) bool {
+		return clip.Contains(screenX, screenY)
+	}
+
+	// Top border
+	if inClip(x, y) {
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, x+1))
+		output.WriteString("\033[0m")
+		output.WriteRune(bc.topLeft)
+	}
+
+	// Top border horizontal line (simplified - no title when clipped)
+	for i := 0; i < innerCols; i++ {
+		screenX := x + 1 + i
+		if inClip(screenX, y) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, screenX+1))
+			output.WriteRune(bc.horizontal)
+		}
+	}
+
+	if inClip(x+totalWidth-1, y) {
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, x+totalWidth))
+		output.WriteRune(bc.topRight)
+	}
+
+	// Side borders
+	for row := 0; row < innerRows; row++ {
+		screenY := y + row + 1
+
+		// Left border
+		if inClip(x, screenY) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", screenY+1, x+1))
+			output.WriteRune(bc.vertical)
+		}
+
+		// Right border
+		if inClip(x+totalWidth-1, screenY) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", screenY+1, x+totalWidth))
+			output.WriteRune(bc.vertical)
+		}
+	}
+
+	// Bottom border
+	bottomY := y + innerRows + 1
+	if inClip(x, bottomY) {
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", bottomY+1, x+1))
+		output.WriteRune(bc.bottomLeft)
+	}
+
+	for i := 0; i < innerCols; i++ {
+		screenX := x + 1 + i
+		if inClip(screenX, bottomY) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", bottomY+1, screenX+1))
+			output.WriteRune(bc.horizontal)
+		}
+	}
+
+	if inClip(x+totalWidth-1, bottomY) {
+		output.WriteString(fmt.Sprintf("\033[%d;%dH", bottomY+1, x+totalWidth))
+		output.WriteRune(bc.bottomRight)
+	}
+}
+
+// renderStatusBarToClipped draws the status bar with clipping
+func (r *Renderer) renderStatusBarToClipped(output *strings.Builder, x, y, width int, scrollOffset int, clip Rect) {
+	cols, rows := r.term.buffer.GetSize()
+	cursorX, cursorY := r.term.buffer.GetCursor()
+
+	// Build status text
+	var status string
+	if scrollOffset > 0 {
+		maxScroll := r.term.buffer.GetMaxScrollOffset()
+		percent := 100 - (scrollOffset * 100 / maxScroll)
+		status = fmt.Sprintf(" [%d%%] Lines: %d | Cursor: %d,%d | Size: %dx%d ",
+			percent, r.term.buffer.GetScrollbackSize(), cursorX+1, cursorY+1, cols, rows)
+	} else {
+		status = fmt.Sprintf(" Lines: %d | Cursor: %d,%d | Size: %dx%d ",
+			r.term.buffer.GetScrollbackSize(), cursorX+1, cursorY+1, cols, rows)
+	}
+
+	// Pad to full width
+	if len(status) < width {
+		status = status + strings.Repeat(" ", width-len(status))
+	} else if len(status) > width {
+		status = status[:width]
+	}
+
+	// Render only visible characters
+	for i, ch := range status {
+		screenX := x + i
+		if clip.Contains(screenX, y) {
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", y+1, screenX+1))
+			output.WriteString("\033[7m") // Reverse video
+			output.WriteRune(ch)
+		}
+	}
 	output.WriteString("\033[27m") // End reverse video
 }

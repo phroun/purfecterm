@@ -28,6 +28,47 @@ const (
 	BorderRounded                   // Rounded corners (single line)
 )
 
+// Rect represents a rectangle for clipping
+type Rect struct {
+	X, Y          int // Top-left position
+	Width, Height int // Size
+}
+
+// Contains returns true if the point (x, y) is within the rectangle
+func (r Rect) Contains(x, y int) bool {
+	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
+}
+
+// IsEmpty returns true if the rectangle has zero area
+func (r Rect) IsEmpty() bool {
+	return r.Width <= 0 || r.Height <= 0
+}
+
+// Intersect returns the intersection of two rectangles
+func (r Rect) Intersect(other Rect) Rect {
+	x1 := max(r.X, other.X)
+	y1 := max(r.Y, other.Y)
+	x2 := min(r.X+r.Width, other.X+other.Width)
+	y2 := min(r.Y+r.Height, other.Y+other.Height)
+
+	if x2 <= x1 || y2 <= y1 {
+		return Rect{} // No intersection
+	}
+	return Rect{X: x1, Y: y1, Width: x2 - x1, Height: y2 - y1}
+}
+
+// RenderedCell represents a single cell ready for display
+type RenderedCell struct {
+	Char      rune
+	Combining string
+	Fg, Bg    purfecterm.Color
+	Bold      bool
+	Italic    bool
+	Underline bool
+	Blink     bool
+	Reverse   bool
+}
+
 // TerminalCapabilities describes the capabilities of the terminal
 type TerminalCapabilities struct {
 	TermType      string
@@ -104,6 +145,10 @@ type Terminal struct {
 	focused  bool
 	onFocus  func(bool) // Called when focus state changes
 	onBell   func()     // Called when bell is triggered (for parent TUI notification)
+
+	// Clipping for partial visibility (e.g., scrollable containers)
+	clipRect    Rect // Visible area in screen coordinates (zero = no clipping)
+	clipEnabled bool
 
 	// Callbacks
 	onExit   func(int)            // Called when child process exits with exit code
@@ -805,6 +850,129 @@ func (t *Terminal) GetMinOuterSize() (width, height int) {
 // Useful for TUI toolkits to optimize render cycles.
 func (t *Terminal) NeedsRender() bool {
 	return t.renderer.NeedsRender()
+}
+
+// SetClipRect sets a clipping rectangle for partial visibility.
+// Only cells within this rectangle will be rendered. This is useful when the
+// terminal is inside a scrollable container or partially obscured by other widgets.
+// The rectangle is in screen coordinates (same coordinate system as OffsetX/OffsetY).
+// Pass an empty/zero Rect to disable clipping.
+func (t *Terminal) SetClipRect(rect Rect) {
+	t.mu.Lock()
+	t.clipRect = rect
+	t.clipEnabled = !rect.IsEmpty()
+	t.mu.Unlock()
+	t.renderer.ForceFullRedraw()
+}
+
+// GetClipRect returns the current clipping rectangle, or an empty Rect if clipping is disabled.
+func (t *Terminal) GetClipRect() Rect {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.clipEnabled {
+		return t.clipRect
+	}
+	return Rect{}
+}
+
+// ClearClipRect disables clipping, allowing the full terminal to render.
+func (t *Terminal) ClearClipRect() {
+	t.mu.Lock()
+	t.clipEnabled = false
+	t.clipRect = Rect{}
+	t.mu.Unlock()
+	t.renderer.ForceFullRedraw()
+}
+
+// GetCells returns the terminal's content as a 2D grid of rendered cells.
+// This allows a TUI compositor to handle rendering and clipping directly.
+// The grid includes the terminal content (not border/status bar).
+// Returns cells[row][col] where row 0 is the top.
+func (t *Terminal) GetCells() [][]RenderedCell {
+	t.mu.Lock()
+	opts := t.options
+	buffer := t.buffer
+	t.mu.Unlock()
+
+	cols, rows := buffer.GetSize()
+	isDark := buffer.IsDarkTheme()
+
+	cells := make([][]RenderedCell, rows)
+	for y := 0; y < rows; y++ {
+		cells[y] = make([]RenderedCell, cols)
+		for x := 0; x < cols; x++ {
+			cell := buffer.GetVisibleCell(x, y)
+
+			// Resolve colors
+			fg := opts.Scheme.ResolveColor(cell.Foreground, true, isDark)
+			bg := opts.Scheme.ResolveColor(cell.Background, false, isDark)
+
+			// Handle reverse video
+			if cell.Reverse {
+				fg, bg = bg, fg
+			}
+
+			char := cell.Char
+			if char == 0 {
+				char = ' '
+			}
+
+			cells[y][x] = RenderedCell{
+				Char:      char,
+				Combining: cell.Combining,
+				Fg:        fg,
+				Bg:        bg,
+				Bold:      cell.Bold,
+				Italic:    cell.Italic,
+				Underline: cell.Underline,
+				Blink:     cell.Blink,
+				Reverse:   cell.Reverse,
+			}
+		}
+	}
+
+	return cells
+}
+
+// GetCellAt returns a single rendered cell at the given position.
+// Returns an empty cell if coordinates are out of bounds.
+func (t *Terminal) GetCellAt(col, row int) RenderedCell {
+	t.mu.Lock()
+	opts := t.options
+	buffer := t.buffer
+	t.mu.Unlock()
+
+	cols, rows := buffer.GetSize()
+	if col < 0 || col >= cols || row < 0 || row >= rows {
+		return RenderedCell{Char: ' '}
+	}
+
+	isDark := buffer.IsDarkTheme()
+	cell := buffer.GetVisibleCell(col, row)
+
+	fg := opts.Scheme.ResolveColor(cell.Foreground, true, isDark)
+	bg := opts.Scheme.ResolveColor(cell.Background, false, isDark)
+
+	if cell.Reverse {
+		fg, bg = bg, fg
+	}
+
+	char := cell.Char
+	if char == 0 {
+		char = ' '
+	}
+
+	return RenderedCell{
+		Char:      char,
+		Combining: cell.Combining,
+		Fg:        fg,
+		Bg:        bg,
+		Bold:      cell.Bold,
+		Italic:    cell.Italic,
+		Underline: cell.Underline,
+		Blink:     cell.Blink,
+		Reverse:   cell.Reverse,
+	}
 }
 
 // HandleKeyString processes a key event by name (for embedded mode).
