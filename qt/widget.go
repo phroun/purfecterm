@@ -186,6 +186,9 @@ type Widget struct {
 	// Focus state
 	hasFocus bool
 
+	// Mouse reporting
+	mouseReportingEnabled bool // When true, forward mouse events to PTY when app requests tracking
+
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
@@ -806,6 +809,13 @@ func (w *Widget) getFontForCharacter(r rune, mainFont string, fontSize int) stri
 
 	// Fall back to main font
 	return mainFont
+}
+
+// SetMouseReportingEnabled enables or disables xterm mouse event reporting
+func (w *Widget) SetMouseReportingEnabled(enabled bool) {
+	w.mu.Lock()
+	w.mouseReportingEnabled = enabled
+	w.mu.Unlock()
 }
 
 // SetInputCallback sets the callback for handling input
@@ -2631,10 +2641,74 @@ func isModifierKey(key qt.Key) bool {
 	return false
 }
 
+// sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
+// Returns true if the event was consumed by mouse reporting.
+func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	w.mu.Lock()
+	mouseReporting := w.mouseReportingEnabled
+	onInput := w.onInput
+	w.mu.Unlock()
+
+	if !mouseReporting || onInput == nil {
+		return false
+	}
+
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if trackingMode == 0 {
+		return false
+	}
+
+	encodingMode := w.buffer.GetMouseEncodingMode()
+	data := purfecterm.EncodeMouseEvent(button, cellX+1, cellY+1, press, encodingMode)
+	if data != nil {
+		onInput(data)
+		return true
+	}
+	return false
+}
+
+// qtMouseModifiers returns the xterm mouse modifier flags from Qt modifiers
+func qtMouseModifiers(modifiers qt.KeyboardModifier) int {
+	mods := 0
+	if modifiers&qt.ShiftModifier != 0 {
+		mods |= purfecterm.MouseModShift
+	}
+	if modifiers&qt.AltModifier != 0 {
+		mods |= purfecterm.MouseModAlt
+	}
+	if modifiers&qt.ControlModifier != 0 {
+		mods |= purfecterm.MouseModControl
+	}
+	return mods
+}
+
 func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
+	pos := event.Pos()
+	cellX, cellY := w.screenToCell(pos.X(), pos.Y())
+	modifiers := event.Modifiers()
+	mods := qtMouseModifiers(modifiers)
+
+	// Check if mouse reporting should handle this event
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		var mouseBtn int
+		switch event.Button() {
+		case qt.LeftButton:
+			mouseBtn = purfecterm.MouseButtonLeft
+		case qt.MiddleButton:
+			mouseBtn = purfecterm.MouseButtonMiddle
+		case qt.RightButton:
+			mouseBtn = purfecterm.MouseButtonRight
+		default:
+			mouseBtn = purfecterm.MouseButtonLeft
+		}
+		w.mouseDown = true
+		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		w.widget.SetFocus()
+		return
+	}
+
 	if event.Button() == qt.LeftButton {
-		pos := event.Pos()
-		cellX, cellY := w.screenToCell(pos.X(), pos.Y())
 		w.mouseDown = true
 		w.mouseDownX = cellX
 		w.mouseDownY = cellY
@@ -2645,6 +2719,29 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 }
 
 func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
+	// Check if mouse reporting should handle this event
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		pos := event.Pos()
+		cellX, cellY := w.screenToCell(pos.X(), pos.Y())
+		modifiers := event.Modifiers()
+		mods := qtMouseModifiers(modifiers)
+		var mouseBtn int
+		switch event.Button() {
+		case qt.LeftButton:
+			mouseBtn = purfecterm.MouseButtonLeft
+		case qt.MiddleButton:
+			mouseBtn = purfecterm.MouseButtonMiddle
+		case qt.RightButton:
+			mouseBtn = purfecterm.MouseButtonRight
+		default:
+			mouseBtn = purfecterm.MouseButtonLeft
+		}
+		w.mouseDown = false
+		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		return
+	}
+
 	if event.Button() == qt.LeftButton {
 		w.mouseDown = false
 		w.stopAutoScroll()
@@ -2656,12 +2753,27 @@ func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
 }
 
 func (w *Widget) mouseMoveEvent(event *qt.QMouseEvent) {
-	if !w.mouseDown {
+	pos := event.Pos()
+	cellX, cellY := w.screenToCell(pos.X(), pos.Y())
+
+	// Check if mouse reporting should handle motion events
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		if trackingMode == 1003 || (trackingMode == 1002 && w.mouseDown) {
+			modifiers := event.Modifiers()
+			mods := qtMouseModifiers(modifiers)
+			btn := purfecterm.MouseButtonNone | purfecterm.MouseMotionFlag
+			if w.mouseDown {
+				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
+			}
+			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+		}
 		return
 	}
 
-	pos := event.Pos()
-	cellX, cellY := w.screenToCell(pos.X(), pos.Y())
+	if !w.mouseDown {
+		return
+	}
 
 	if !w.selectionMoved {
 		if cellX != w.mouseDownX || cellY != w.mouseDownY {
@@ -2849,6 +2961,20 @@ func (w *Widget) wheelEvent(event *qt.QWheelEvent) {
 
 	deltaY := event.AngleDelta().Y()
 	deltaX := event.AngleDelta().X()
+
+	// Check if mouse reporting should handle scroll events
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		mods := qtMouseModifiers(modifiers)
+		wpos := event.Position()
+		cellX, cellY := w.screenToCell(int(wpos.X()), int(wpos.Y()))
+		if deltaY > 0 {
+			w.sendMouseEvent(purfecterm.MouseScrollUp|mods, cellX, cellY, true)
+		} else if deltaY < 0 {
+			w.sendMouseEvent(purfecterm.MouseScrollDown|mods, cellX, cellY, true)
+		}
+		return
+	}
 
 	// Shift+scroll or horizontal scroll = horizontal scrolling
 	if hasShift || (deltaX != 0 && deltaY == 0) {
