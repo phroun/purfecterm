@@ -153,6 +153,11 @@ func keyToBytes(key string) []byte {
 		return bytes
 	}
 
+	// Single character keys (including "-", "+", "=", etc.) - handle before modifier checks
+	if len(key) == 1 {
+		return []byte(key)
+	}
+
 	// Control keys: ^A through ^Z
 	if len(key) == 2 && key[0] == '^' {
 		ch := key[1]
@@ -187,8 +192,8 @@ func keyToBytes(key string) []byte {
 		return []byte{0x1b, key[2]}
 	}
 
-	// Regular character (including UTF-8)
-	if len(key) >= 1 && key[0] != '^' && !strings.Contains(key, "-") {
+	// Multi-byte UTF-8 characters (len > 1, no modifiers)
+	if len(key) > 1 && key[0] != '^' && !strings.Contains(key, "-") {
 		return []byte(key)
 	}
 
