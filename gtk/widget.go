@@ -346,11 +346,11 @@ type Widget struct {
 
 	// GTK widgets
 	drawingArea    *gtk.DrawingArea
-	scrollbar      *gtk.Scrollbar // Vertical scrollbar
-	horizScrollbar *gtk.Scrollbar // Horizontal scrollbar
-	box            *gtk.Box       // Outer vertical box
-	innerBox       *gtk.Box       // Inner horizontal box (drawingArea + vscrollbar)
-	bottomBox      *gtk.Box       // Bottom horizontal box (hscrollbar + corner)
+	scrollbar      *gtk.Scrollbar   // Vertical scrollbar
+	horizScrollbar *gtk.Scrollbar   // Horizontal scrollbar
+	box            *gtk.Box         // Outer vertical box
+	innerBox       *gtk.Box         // Inner horizontal box (drawingArea + vscrollbar)
+	bottomBox      *gtk.Box         // Bottom horizontal box (hscrollbar + corner)
 	cornerArea     *gtk.DrawingArea // Corner area between scrollbars
 
 	// Terminal state
@@ -415,8 +415,8 @@ type Widget struct {
 	clipboard *gtk.Clipboard
 
 	// Context menu for right-click
-	contextMenu              *gtk.Menu
-	mouseReportingMenuItem   *gtk.CheckMenuItem // Toggle for mouse reporting (nil if feature disabled)
+	contextMenu            *gtk.Menu
+	mouseReportingMenuItem *gtk.CheckMenuItem // Toggle for mouse reporting (nil if feature disabled)
 
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
@@ -959,8 +959,8 @@ func (w *Widget) renderCustomGlyph(cr *cairo.Context, cell *purfecterm.Cell, cel
 
 	// Determine cache key flags based on palette characteristics
 	var paletteHash uint64
-	usesDefaultFG := true  // Default to true for fallback mode (no palette)
-	usesBg := true         // Default to true for fallback mode
+	usesDefaultFG := true // Default to true for fallback mode (no palette)
+	usesBg := true        // Default to true for fallback mode
 	isSingleEntry := false
 
 	if palette != nil {
