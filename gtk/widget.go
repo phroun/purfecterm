@@ -17,6 +17,11 @@ static void get_button_root_coords(GdkEvent *ev, double *x, double *y) {
     gdk_event_get_root_coords(ev, x, y);
 }
 
+// Request more motion events (helps prevent event coalescing)
+static void request_motion_events(GdkEventMotion *motion) {
+    gdk_event_request_motions(motion);
+}
+
 // Check if a font family is available via Pango
 static int font_family_exists(const char *family_name) {
     PangoFontMap *font_map = pango_cairo_font_map_get_default();
@@ -346,11 +351,11 @@ type Widget struct {
 
 	// GTK widgets
 	drawingArea    *gtk.DrawingArea
-	scrollbar      *gtk.Scrollbar // Vertical scrollbar
-	horizScrollbar *gtk.Scrollbar // Horizontal scrollbar
-	box            *gtk.Box       // Outer vertical box
-	innerBox       *gtk.Box       // Inner horizontal box (drawingArea + vscrollbar)
-	bottomBox      *gtk.Box       // Bottom horizontal box (hscrollbar + corner)
+	scrollbar      *gtk.Scrollbar   // Vertical scrollbar
+	horizScrollbar *gtk.Scrollbar   // Horizontal scrollbar
+	box            *gtk.Box         // Outer vertical box
+	innerBox       *gtk.Box         // Inner horizontal box (drawingArea + vscrollbar)
+	bottomBox      *gtk.Box         // Bottom horizontal box (hscrollbar + corner)
 	cornerArea     *gtk.DrawingArea // Corner area between scrollbars
 
 	// Terminal state
@@ -415,7 +420,8 @@ type Widget struct {
 	clipboard *gtk.Clipboard
 
 	// Context menu for right-click
-	contextMenu *gtk.Menu
+	contextMenu            *gtk.Menu
+	mouseReportingMenuItem *gtk.CheckMenuItem // Toggle for mouse reporting (nil if feature disabled)
 
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
@@ -958,8 +964,8 @@ func (w *Widget) renderCustomGlyph(cr *cairo.Context, cell *purfecterm.Cell, cel
 
 	// Determine cache key flags based on palette characteristics
 	var paletteHash uint64
-	usesDefaultFG := true  // Default to true for fallback mode (no palette)
-	usesBg := true         // Default to true for fallback mode
+	usesDefaultFG := true // Default to true for fallback mode (no palette)
+	usesBg := true        // Default to true for fallback mode
 	isSingleEntry := false
 
 	if palette != nil {
@@ -1331,11 +1337,29 @@ func (w *Widget) onCornerButtonPress(da *gtk.DrawingArea, event *gdk.Event) bool
 	return false
 }
 
-// SetMouseReportingEnabled enables or disables xterm mouse event reporting
+// SetMouseReportingEnabled enables or disables xterm mouse event reporting.
+// When enabled, a toggle menu item is added to the context menu.
 func (w *Widget) SetMouseReportingEnabled(enabled bool) {
 	w.mu.Lock()
 	w.mouseReportingEnabled = enabled
 	w.mu.Unlock()
+
+	// Add/remove context menu item based on enabled state
+	if enabled && w.mouseReportingMenuItem == nil && w.contextMenu != nil {
+		// Add separator and mouse reporting toggle
+		separator, _ := gtk.SeparatorMenuItemNew()
+		w.contextMenu.Append(separator)
+
+		w.mouseReportingMenuItem, _ = gtk.CheckMenuItemNewWithLabel("Mouse Reporting")
+		w.mouseReportingMenuItem.SetActive(true) // Default to enabled
+		w.mouseReportingMenuItem.Connect("toggled", func() {
+			w.mu.Lock()
+			w.mouseReportingEnabled = w.mouseReportingMenuItem.GetActive()
+			w.mu.Unlock()
+		})
+		w.contextMenu.Append(w.mouseReportingMenuItem)
+		w.contextMenu.ShowAll()
+	}
 }
 
 // SetInputCallback sets the callback for handling input
@@ -2361,30 +2385,50 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	button := btn.Button()
 
 	cellX, cellY := w.screenToCell(x, y)
-	state := btn.State()
-	mods := gdkMouseModifiers(state)
+	state := uint(btn.State())
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
 
-	// Check if mouse reporting should handle this event
+	// Determine if we should forward to PTY or handle locally
+	// Shift reverses the mode: when tracking active, Shift = local selection
+	// When tracking inactive, Shift has no special effect
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	// Right-click: Shift+right always shows context menu
+	if button == 3 {
+		if forwardToPTY && !hasShift {
+			// Forward right-click to PTY
+			mods := gdkMouseModifiers(state)
+			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			da.GrabFocus()
+			return true
+		}
+		// Show context menu (either no tracking, or Shift held)
+		if w.contextMenu != nil {
+			w.contextMenu.PopupAtPointer(ev)
+		}
+		return true
+	}
+
+	// Left/middle button
+	if forwardToPTY {
 		var mouseBtn int
 		switch button {
 		case 1:
 			mouseBtn = purfecterm.MouseButtonLeft
 		case 2:
 			mouseBtn = purfecterm.MouseButtonMiddle
-		case 3:
-			mouseBtn = purfecterm.MouseButtonRight
 		default:
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
+		mods := gdkMouseModifiers(state)
+		w.mouseDown = true // Track for motion events
 		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
 		da.GrabFocus()
 		return true
 	}
 
-	if button == 1 { // Left button
-		// Record press position but don't start selection yet
+	if button == 1 { // Left button - local selection
 		w.mouseDown = true
 		w.mouseDownX = cellX
 		w.mouseDownY = cellY
@@ -2394,25 +2438,19 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		return true
 	}
 
-	if button == 3 { // Right button - show context menu
-		if w.contextMenu != nil {
-			w.contextMenu.PopupAtPointer(ev)
-		}
-		return true
-	}
-
 	return false
 }
 
 func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	btn := gdk.EventButtonNewFromEvent(ev)
 	button := btn.Button()
-	state := btn.State()
-	mods := gdkMouseModifiers(state)
+	state := uint(btn.State())
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
 
-	// Check if mouse reporting should handle this event
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		x, y := btn.X(), btn.Y()
 		cellX, cellY := w.screenToCell(x, y)
 		var mouseBtn int
@@ -2426,13 +2464,15 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		default:
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
+		mods := gdkMouseModifiers(state)
+		w.mouseDown = false
 		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
 		return true
 	}
 
 	if button == 1 {
 		w.mouseDown = false
-		w.stopAutoScroll() // Stop any auto-scrolling
+		w.stopAutoScroll()
 		if w.selecting {
 			w.selecting = false
 			w.buffer.EndSelection()
@@ -2447,13 +2487,18 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	C.get_event_coords((*C.GdkEvent)(unsafe.Pointer(ev.Native())), &x, &y)
 	cellX, cellY := w.screenToCell(float64(x), float64(y))
 
+	motion := (*C.GdkEventMotion)(unsafe.Pointer(ev.Native()))
+	state := uint(motion.state)
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
+
 	// Check if mouse reporting should handle motion events
+	// Shift bypasses mouse reporting for local selection
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		// Mode 1003 reports all motion; mode 1002 reports motion while button down
 		if trackingMode == 1003 || (trackingMode == 1002 && w.mouseDown) {
-			motion := (*C.GdkEventMotion)(unsafe.Pointer(ev.Native()))
-			state := uint(motion.state)
 			mods := gdkMouseModifiers(state)
 			btn := purfecterm.MouseButtonNone | purfecterm.MouseMotionFlag
 			if w.mouseDown {
@@ -2461,6 +2506,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			}
 			w.sendMouseEvent(btn|mods, cellX, cellY, true)
 		}
+		// Request more motion events to prevent coalescing
+		C.request_motion_events(motion)
 		return true
 	}
 
@@ -2490,6 +2537,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			w.selectStartY = w.mouseDownY
 			w.buffer.StartSelection(w.mouseDownX, w.mouseDownY)
 		} else {
+			// Request more motion events even when not moving to new cell
+			C.request_motion_events(motion)
 			return true // Mouse still in same cell, don't select yet
 		}
 	}
@@ -2548,6 +2597,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	}
 
 	w.buffer.UpdateSelection(cellX, cellY)
+	// Request more motion events to prevent coalescing
+	C.request_motion_events(motion)
 	return true
 }
 
@@ -2660,11 +2711,15 @@ func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	scroll := gdk.EventScrollNewFromEvent(ev)
 	dir := scroll.Direction()
 	state := scroll.State()
+	hasShift := state&gdk.SHIFT_MASK != 0
 
 	// Check if mouse reporting should handle scroll events
+	// Shift bypasses mouse reporting for local scrollback
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
-		mods := gdkMouseModifiers(state)
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
+		mods := gdkMouseModifiers(uint(state))
 		// Get scroll event coordinates
 		var sx, sy C.double
 		C.get_event_coords((*C.GdkEvent)(unsafe.Pointer(ev.Native())), &sx, &sy)
@@ -2679,9 +2734,7 @@ func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 	}
 
-	// Check for Shift modifier for horizontal scrolling
-	hasShift := state&gdk.SHIFT_MASK != 0
-
+	// Shift+scroll = horizontal scrolling
 	maxOffset := w.buffer.GetMaxScrollOffset()
 
 	switch dir {
