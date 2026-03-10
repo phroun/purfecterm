@@ -2659,7 +2659,7 @@ func (w *Widget) stopAutoScroll() {
 func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	scroll := gdk.EventScrollNewFromEvent(ev)
 	dir := scroll.Direction()
-	state := scroll.State()
+	state := uint(scroll.State())
 
 	// Check if mouse reporting should handle scroll events
 	trackingMode := w.buffer.GetMouseTrackingMode()
