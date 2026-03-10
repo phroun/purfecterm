@@ -273,12 +273,24 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 		return []byte{0x1b, '[', '1', ';', modChar, code}
 	}
 
-	// Tab: ESC [ 1 ; <mod> Z (or ESC [ Z for just Shift)
+	// Tab: S-Tab is ESC [ Z, Alt+Tab is ESC + Tab byte
 	if baseKey == "Tab" {
-		if mod == 2 { // Just Shift
+		switch mod {
+		case 2: // Shift
 			return []byte{0x1b, '[', 'Z'}
+		case 3: // Alt
+			return []byte{0x1b, 0x09}
+		case 4: // Shift+Alt
+			return []byte{0x1b, 0x1b, '[', 'Z'} // ESC + S-Tab
+		case 5: // Ctrl
+			return []byte{0x09} // Ctrl+Tab = Tab (no standard sequence)
+		case 6: // Shift+Ctrl
+			return []byte{0x1b, '[', 'Z'} // Treat as S-Tab
+		case 7: // Alt+Ctrl
+			return []byte{0x1b, 0x09} // ESC + Tab
+		default:
+			return []byte{0x09}
 		}
-		return []byte{0x1b, '[', '1', ';', modChar, 'Z'}
 	}
 
 	// Enter with modifiers
