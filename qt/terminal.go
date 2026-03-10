@@ -20,6 +20,12 @@ type Options struct {
 	Scheme         purfecterm.ColorScheme // Color scheme (default: DefaultColorScheme())
 	Shell          string                 // Shell to run (default: $SHELL or /bin/sh)
 	WorkingDir     string                 // Initial working directory (default: current dir)
+
+	// DisableMouseReporting disables xterm-style mouse event reporting to the PTY.
+	// By default (false), mouse events are forwarded to the terminal application
+	// when it requests mouse tracking via escape sequences (e.g., CSI ?1000h).
+	// Set to true to prevent mouse events from ever being reported to the PTY.
+	DisableMouseReporting bool
 }
 
 // Terminal is a complete terminal emulator widget
@@ -72,6 +78,7 @@ func New(opts Options) (*Terminal, error) {
 	widget := NewWidget(opts.Cols, opts.Rows, opts.ScrollbackSize)
 	widget.SetFont(opts.FontFamily, opts.FontSize)
 	widget.SetColorScheme(opts.Scheme)
+	widget.SetMouseReportingEnabled(!opts.DisableMouseReporting)
 
 	t := &Terminal{
 		widget:  widget,

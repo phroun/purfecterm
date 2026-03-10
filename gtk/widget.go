@@ -402,6 +402,9 @@ type Widget struct {
 	// Focus state
 	hasFocus bool
 
+	// Mouse reporting
+	mouseReportingEnabled bool // When true, forward mouse events to PTY when app requests tracking
+
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
@@ -1326,6 +1329,13 @@ func (w *Widget) onCornerButtonPress(da *gtk.DrawingArea, event *gdk.Event) bool
 	}
 
 	return false
+}
+
+// SetMouseReportingEnabled enables or disables xterm mouse event reporting
+func (w *Widget) SetMouseReportingEnabled(enabled bool) {
+	w.mu.Lock()
+	w.mouseReportingEnabled = enabled
+	w.mu.Unlock()
 }
 
 // SetInputCallback sets the callback for handling input
@@ -2303,13 +2313,77 @@ func (w *Widget) screenToCell(screenX, screenY float64) (cellX, cellY int) {
 	return
 }
 
+// sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
+// Returns true if the event was consumed by mouse reporting.
+func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	w.mu.Lock()
+	mouseReporting := w.mouseReportingEnabled
+	onInput := w.onInput
+	w.mu.Unlock()
+
+	if !mouseReporting || onInput == nil {
+		return false
+	}
+
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if trackingMode == 0 {
+		return false
+	}
+
+	encodingMode := w.buffer.GetMouseEncodingMode()
+	// Convert to 1-based coordinates
+	data := purfecterm.EncodeMouseEvent(button, cellX+1, cellY+1, press, encodingMode)
+	if data != nil {
+		onInput(data)
+		return true
+	}
+	return false
+}
+
+// gdkMouseModifiers returns the xterm mouse modifier flags from GDK state
+func gdkMouseModifiers(state uint) int {
+	mods := 0
+	if state&uint(gdk.SHIFT_MASK) != 0 {
+		mods |= purfecterm.MouseModShift
+	}
+	if state&uint(gdk.MOD1_MASK) != 0 {
+		mods |= purfecterm.MouseModAlt
+	}
+	if state&uint(gdk.CONTROL_MASK) != 0 {
+		mods |= purfecterm.MouseModControl
+	}
+	return mods
+}
+
 func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	btn := gdk.EventButtonNewFromEvent(ev)
 	x, y := btn.X(), btn.Y()
 	button := btn.Button()
 
+	cellX, cellY := w.screenToCell(x, y)
+	state := btn.State()
+	mods := gdkMouseModifiers(state)
+
+	// Check if mouse reporting should handle this event
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		var mouseBtn int
+		switch button {
+		case 1:
+			mouseBtn = purfecterm.MouseButtonLeft
+		case 2:
+			mouseBtn = purfecterm.MouseButtonMiddle
+		case 3:
+			mouseBtn = purfecterm.MouseButtonRight
+		default:
+			mouseBtn = purfecterm.MouseButtonLeft
+		}
+		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		da.GrabFocus()
+		return true
+	}
+
 	if button == 1 { // Left button
-		cellX, cellY := w.screenToCell(x, y)
 		// Record press position but don't start selection yet
 		w.mouseDown = true
 		w.mouseDownX = cellX
@@ -2333,6 +2407,28 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	btn := gdk.EventButtonNewFromEvent(ev)
 	button := btn.Button()
+	state := btn.State()
+	mods := gdkMouseModifiers(state)
+
+	// Check if mouse reporting should handle this event
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		x, y := btn.X(), btn.Y()
+		cellX, cellY := w.screenToCell(x, y)
+		var mouseBtn int
+		switch button {
+		case 1:
+			mouseBtn = purfecterm.MouseButtonLeft
+		case 2:
+			mouseBtn = purfecterm.MouseButtonMiddle
+		case 3:
+			mouseBtn = purfecterm.MouseButtonRight
+		default:
+			mouseBtn = purfecterm.MouseButtonLeft
+		}
+		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		return true
+	}
 
 	if button == 1 {
 		w.mouseDown = false
@@ -2346,14 +2442,31 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 }
 
 func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
-	if !w.mouseDown {
-		return false
-	}
-
 	// Use C helper to get coordinates from the event
 	var x, y C.double
 	C.get_event_coords((*C.GdkEvent)(unsafe.Pointer(ev.Native())), &x, &y)
 	cellX, cellY := w.screenToCell(float64(x), float64(y))
+
+	// Check if mouse reporting should handle motion events
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		// Mode 1003 reports all motion; mode 1002 reports motion while button down
+		if trackingMode == 1003 || (trackingMode == 1002 && w.mouseDown) {
+			motion := (*C.GdkEventMotion)(unsafe.Pointer(ev.Native()))
+			state := uint(motion.state)
+			mods := gdkMouseModifiers(state)
+			btn := purfecterm.MouseButtonNone | purfecterm.MouseMotionFlag
+			if w.mouseDown {
+				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
+			}
+			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+		}
+		return true
+	}
+
+	if !w.mouseDown {
+		return false
+	}
 
 	// Get terminal dimensions for edge detection
 	cols, rows := w.buffer.GetSize()
@@ -2547,6 +2660,24 @@ func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	scroll := gdk.EventScrollNewFromEvent(ev)
 	dir := scroll.Direction()
 	state := scroll.State()
+
+	// Check if mouse reporting should handle scroll events
+	trackingMode := w.buffer.GetMouseTrackingMode()
+	if w.mouseReportingEnabled && trackingMode != 0 {
+		mods := gdkMouseModifiers(state)
+		// Get scroll event coordinates
+		var sx, sy C.double
+		C.get_event_coords((*C.GdkEvent)(unsafe.Pointer(ev.Native())), &sx, &sy)
+		cellX, cellY := w.screenToCell(float64(sx), float64(sy))
+		switch dir {
+		case gdk.SCROLL_UP:
+			w.sendMouseEvent(purfecterm.MouseScrollUp|mods, cellX, cellY, true)
+			return true
+		case gdk.SCROLL_DOWN:
+			w.sendMouseEvent(purfecterm.MouseScrollDown|mods, cellX, cellY, true)
+			return true
+		}
+	}
 
 	// Check for Shift modifier for horizontal scrolling
 	hasShift := state&gdk.SHIFT_MASK != 0

@@ -118,6 +118,10 @@ type Buffer struct {
 
 	bracketedPasteMode bool
 
+	// Mouse tracking modes (set via DEC Private Mode sequences)
+	mouseTrackingMode  int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
+	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended
+
 	currentFg        Color
 	currentBg            Color
 	currentBold          bool
@@ -748,6 +752,36 @@ func (b *Buffer) IsBracketedPasteModeEnabled() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.bracketedPasteMode
+}
+
+// SetMouseTrackingMode sets the mouse tracking mode
+// 0=off, 1000=X11 normal (press/release), 1002=cell motion, 1003=all motion
+func (b *Buffer) SetMouseTrackingMode(mode int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.mouseTrackingMode = mode
+}
+
+// GetMouseTrackingMode returns the current mouse tracking mode
+func (b *Buffer) GetMouseTrackingMode() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.mouseTrackingMode
+}
+
+// SetMouseEncodingMode sets the mouse encoding mode
+// 0=X10 default, 1006=SGR extended
+func (b *Buffer) SetMouseEncodingMode(mode int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.mouseEncodingMode = mode
+}
+
+// GetMouseEncodingMode returns the current mouse encoding mode
+func (b *Buffer) GetMouseEncodingMode() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.mouseEncodingMode
 }
 
 // SetFlexWidthMode enables or disables flexible East Asian Width mode

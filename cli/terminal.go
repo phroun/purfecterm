@@ -112,6 +112,12 @@ type Options struct {
 	//   - Calling HandleInput() to send keystrokes when focused
 	//   - Calling Render() or RenderToString() to display the terminal
 	Embedded bool
+
+	// DisableMouseReporting disables xterm-style mouse event reporting to the PTY.
+	// By default (false), mouse events are forwarded to the terminal application
+	// when it requests mouse tracking via escape sequences (e.g., CSI ?1000h).
+	// Set to true to prevent mouse events from ever being reported to the PTY.
+	DisableMouseReporting bool
 }
 
 // Terminal is a complete terminal emulator running within a CLI terminal
@@ -266,6 +272,13 @@ func (t *Terminal) Start() error {
 
 		// Clear screen
 		fmt.Print("\033[2J\033[H")
+
+		// Enable mouse tracking on host terminal if mouse reporting is enabled
+		if !t.options.DisableMouseReporting {
+			fmt.Print("\033[?1000h") // Enable X11 normal mouse tracking
+			fmt.Print("\033[?1002h") // Enable cell motion tracking
+			fmt.Print("\033[?1006h") // Enable SGR extended mouse encoding
+		}
 
 		// Set up SIGWINCH handler for terminal resize
 		go t.handleSIGWINCH()
@@ -1010,6 +1023,13 @@ func (t *Terminal) Stop() error {
 
 	// Restore terminal state (only in non-embedded mode)
 	if !embedded && oldState != nil {
+		// Disable mouse tracking
+		if !t.options.DisableMouseReporting {
+			fmt.Print("\033[?1006l") // Disable SGR extended encoding
+			fmt.Print("\033[?1002l") // Disable cell motion tracking
+			fmt.Print("\033[?1000l") // Disable X11 normal tracking
+		}
+
 		// Disable alternate screen buffer
 		fmt.Print("\033[?1049l")
 

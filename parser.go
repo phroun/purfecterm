@@ -776,6 +776,30 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			p.buffer.SetCursorVisible(set)
 		case 1049: // Alternate screen buffer
 			// Not yet implemented
+		case 1000: // X11 Normal Mouse Tracking (button press/release)
+			if set {
+				p.buffer.SetMouseTrackingMode(1000)
+			} else {
+				p.buffer.SetMouseTrackingMode(0)
+			}
+		case 1002: // Cell Motion Mouse Tracking (press/release + motion while button down)
+			if set {
+				p.buffer.SetMouseTrackingMode(1002)
+			} else {
+				p.buffer.SetMouseTrackingMode(0)
+			}
+		case 1003: // All Motion Mouse Tracking (all motion events)
+			if set {
+				p.buffer.SetMouseTrackingMode(1003)
+			} else {
+				p.buffer.SetMouseTrackingMode(0)
+			}
+		case 1006: // SGR Extended Mouse Encoding
+			if set {
+				p.buffer.SetMouseEncodingMode(1006)
+			} else {
+				p.buffer.SetMouseEncodingMode(0)
+			}
 		case 2004: // Bracketed paste mode
 			p.buffer.SetBracketedPasteMode(set)
 		case 2027: // Flexible East Asian Width mode

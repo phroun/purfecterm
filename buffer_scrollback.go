@@ -56,6 +56,8 @@ func (b *Buffer) Reset() {
 
 	// Reset modes
 	b.bracketedPasteMode = false
+	b.mouseTrackingMode = 0
+	b.mouseEncodingMode = 0
 	b.flexWidthMode = false
 	b.visualWidthWrap = false
 	b.ambiguousWidthMode = AmbiguousWidthAuto

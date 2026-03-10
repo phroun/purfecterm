@@ -1,16 +1,22 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/phroun/direct-key-handler/keyboard"
+	"github.com/phroun/purfecterm"
 )
 
 // InputHandler manages keyboard input from the host terminal
 type InputHandler struct {
 	term     *Terminal
 	keyboard *keyboard.Handler
+
+	// Mouse state for coordinate tracking
+	lastMouseX int // Last mouse X from Mouse@x,y position key (1-based host coords)
+	lastMouseY int // Last mouse Y from Mouse@x,y position key (1-based host coords)
 }
 
 // NewInputHandler creates a new input handler
@@ -56,6 +62,11 @@ func (h *InputHandler) processInput(data []byte) {
 // handleKey processes a parsed key event from direct-key-handler.
 // Returns true if the key was consumed.
 func (h *InputHandler) handleKey(key string) bool {
+	// Handle mouse events first
+	if h.handleMouseKey(key) {
+		return true
+	}
+
 	// Check for input callback first
 	h.term.mu.Lock()
 	callback := h.term.inputCallback
@@ -247,9 +258,168 @@ var keyToBytesMap = map[string][]byte{
 	"F12": {0x1b, '[', '2', '4', '~'},
 }
 
-// HandleMouseInput processes mouse events (if mouse tracking is enabled)
-// This is a placeholder for future mouse support
-func (h *InputHandler) HandleMouseInput(x, y int, button int, pressed bool) {
-	// Mouse support would be implemented here
-	// For now, this is a no-op
+// handleMouseKey processes mouse key events from direct-key-handler.
+// The library emits mouse events as:
+//   - "Mouse@x,y" - position key (emitted before action for press/release/scroll)
+//   - "MouseLeftPress", "MouseLeftRelease", "MouseScrollUp", etc. - action keys
+//   - "MouseLeftDrag@x,y", "MouseRightDrag@x,y" - drag events (position in key)
+//
+// Returns true if the key was a mouse event and was handled.
+func (h *InputHandler) handleMouseKey(key string) bool {
+	if !strings.HasPrefix(key, "Mouse") {
+		return false
+	}
+
+	// Check if mouse reporting is enabled
+	if h.term.options.DisableMouseReporting {
+		return true // Consume but don't forward
+	}
+
+	trackingMode := h.term.buffer.GetMouseTrackingMode()
+	if trackingMode == 0 {
+		return true // Consume but don't forward (no app tracking active)
+	}
+
+	// Handle position key: "Mouse@x,y"
+	if strings.HasPrefix(key, "Mouse@") {
+		var x, y int
+		if _, err := fmt.Sscanf(key, "Mouse@%d,%d", &x, &y); err == nil {
+			h.lastMouseX = x
+			h.lastMouseY = y
+		}
+		return true // Position key consumed, wait for action key
+	}
+
+	// Handle drag events: "MouseLeftDrag@x,y" etc.
+	if strings.Contains(key, "Drag@") {
+		if trackingMode < 1002 {
+			return true // Mode 1000 doesn't report motion
+		}
+		var x, y int
+		atIdx := strings.LastIndex(key, "@")
+		if atIdx >= 0 {
+			fmt.Sscanf(key[atIdx:], "@%d,%d", &x, &y)
+		}
+		innerX, innerY, ok := h.hostToInnerCoords(x, y)
+		if !ok {
+			return true // Outside terminal area
+		}
+		// Determine button from key name
+		btn := purfecterm.MouseButtonNone
+		actionPart := key[:atIdx]
+		actionPart = stripMouseModifiers(actionPart)
+		switch {
+		case strings.Contains(actionPart, "Left"):
+			btn = purfecterm.MouseButtonLeft
+		case strings.Contains(actionPart, "Middle"):
+			btn = purfecterm.MouseButtonMiddle
+		case strings.Contains(actionPart, "Right"):
+			btn = purfecterm.MouseButtonRight
+		}
+		btn |= purfecterm.MouseMotionFlag
+		btn |= mouseModsFromKey(key)
+		encodingMode := h.term.buffer.GetMouseEncodingMode()
+		data := purfecterm.EncodeMouseEvent(btn, innerX, innerY, true, encodingMode)
+		if data != nil {
+			h.sendToPTY(data)
+		}
+		return true
+	}
+
+	// Handle action keys using last stored position
+	innerX, innerY, ok := h.hostToInnerCoords(h.lastMouseX, h.lastMouseY)
+	if !ok {
+		return true // Outside terminal area
+	}
+
+	// Strip modifier prefixes to get base action
+	baseKey := stripMouseModifiers(key)
+	mods := mouseModsFromKey(key)
+
+	var btn int
+	press := true
+
+	switch baseKey {
+	case "MouseLeftPress":
+		btn = purfecterm.MouseButtonLeft
+	case "MouseMiddlePress":
+		btn = purfecterm.MouseButtonMiddle
+	case "MouseRightPress":
+		btn = purfecterm.MouseButtonRight
+	case "MousePress":
+		btn = purfecterm.MouseButtonLeft
+	case "MouseLeftRelease":
+		btn = purfecterm.MouseButtonLeft
+		press = false
+	case "MouseMiddleRelease":
+		btn = purfecterm.MouseButtonMiddle
+		press = false
+	case "MouseRightRelease":
+		btn = purfecterm.MouseButtonRight
+		press = false
+	case "MouseRelease":
+		btn = purfecterm.MouseButtonLeft
+		press = false
+	case "MouseScrollUp":
+		btn = purfecterm.MouseScrollUp
+	case "MouseScrollDown":
+		btn = purfecterm.MouseScrollDown
+	default:
+		return true // Unknown mouse event, consume
+	}
+
+	btn |= mods
+	encodingMode := h.term.buffer.GetMouseEncodingMode()
+	data := purfecterm.EncodeMouseEvent(btn, innerX, innerY, press, encodingMode)
+	if data != nil {
+		h.sendToPTY(data)
+	}
+	return true
+}
+
+// hostToInnerCoords converts host terminal coordinates (1-based) to inner terminal coordinates (1-based).
+// Returns false if the position is outside the terminal content area.
+func (h *InputHandler) hostToInnerCoords(hostX, hostY int) (int, int, bool) {
+	borderOffset := 0
+	if h.term.options.BorderStyle != BorderNone {
+		borderOffset = 1
+	}
+
+	// Inner content starts at (OffsetX + borderOffset, OffsetY + borderOffset) in 0-based coords
+	contentStartX := h.term.options.OffsetX + borderOffset
+	contentStartY := h.term.options.OffsetY + borderOffset
+
+	// Convert from 1-based host to 0-based, subtract offset, convert back to 1-based
+	innerX := hostX - contentStartX // Now 1-based relative to content area
+	innerY := hostY - contentStartY
+
+	cols, rows := h.term.buffer.GetSize()
+	if innerX < 1 || innerX > cols || innerY < 1 || innerY > rows {
+		return 0, 0, false
+	}
+
+	return innerX, innerY, true
+}
+
+// stripMouseModifiers removes "S-", "M-", "C-" prefixes from a mouse key name
+func stripMouseModifiers(key string) string {
+	for strings.HasPrefix(key, "S-") || strings.HasPrefix(key, "M-") || strings.HasPrefix(key, "C-") {
+		key = key[2:]
+	}
+	return key
+}
+
+// mouseModsFromKey extracts xterm mouse modifier flags from a key name
+func mouseModsFromKey(key string) int {
+	mods := 0
+	if strings.HasPrefix(key, "S-") || strings.Contains(key, "-S-") {
+		mods |= purfecterm.MouseModShift
+	}
+	if strings.HasPrefix(key, "M-") || strings.Contains(key, "-M-") {
+		mods |= purfecterm.MouseModAlt
+	}
+	if strings.HasPrefix(key, "C-") || strings.Contains(key, "-C-") {
+		mods |= purfecterm.MouseModControl
+	}
+	return mods
 }
