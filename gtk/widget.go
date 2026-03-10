@@ -17,6 +17,11 @@ static void get_button_root_coords(GdkEvent *ev, double *x, double *y) {
     gdk_event_get_root_coords(ev, x, y);
 }
 
+// Request more motion events (helps prevent event coalescing)
+static void request_motion_events(GdkEventMotion *motion) {
+    gdk_event_request_motions(motion);
+}
+
 // Check if a font family is available via Pango
 static int font_family_exists(const char *family_name) {
     PangoFontMap *font_map = pango_cairo_font_map_get_default();
@@ -2501,6 +2506,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			}
 			w.sendMouseEvent(btn|mods, cellX, cellY, true)
 		}
+		// Request more motion events to prevent coalescing
+		C.request_motion_events(motion)
 		return true
 	}
 
@@ -2530,6 +2537,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			w.selectStartY = w.mouseDownY
 			w.buffer.StartSelection(w.mouseDownX, w.mouseDownY)
 		} else {
+			// Request more motion events even when not moving to new cell
+			C.request_motion_events(motion)
 			return true // Mouse still in same cell, don't select yet
 		}
 	}
@@ -2588,6 +2597,8 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	}
 
 	w.buffer.UpdateSelection(cellX, cellY)
+	// Request more motion events to prevent coalescing
+	C.request_motion_events(motion)
 	return true
 }
 
