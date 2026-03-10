@@ -157,9 +157,10 @@ func (h *InputHandler) sendToPTY(data []byte) {
 	}
 }
 
-// keyToBytes converts a key name from direct-key-handler to bytes for PTY
+// keyToBytes converts a key name from direct-key-handler to bytes for PTY.
+// Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
-	// Check special keys first
+	// Check explicit mappings first
 	if bytes, ok := keyToBytesMap[key]; ok {
 		return bytes
 	}
@@ -198,12 +199,16 @@ func keyToBytes(key string) []byte {
 		}
 	}
 
-	// Alt+key: M-x
-	if strings.HasPrefix(key, "M-") && len(key) == 3 {
-		return []byte{0x1b, key[2]}
+	// Parse modifier prefixes and base key
+	mods, baseKey := parseModifiers(key)
+	if mods > 0 {
+		// Try to encode with modifiers
+		if result := encodeModifiedKey(mods, baseKey); result != nil {
+			return result
+		}
 	}
 
-	// Multi-byte UTF-8 characters (len > 1, no modifiers)
+	// Multi-byte UTF-8 characters (len > 1, no modifiers, no hyphens)
 	if len(key) > 1 && key[0] != '^' && !strings.Contains(key, "-") {
 		return []byte(key)
 	}
@@ -211,29 +216,175 @@ func keyToBytes(key string) []byte {
 	return nil
 }
 
-// keyToBytesMap maps key names to their byte sequences
+// parseModifiers extracts modifier flags and base key from a key string.
+// Returns xterm modifier code (2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, etc.) and base key.
+// Returns 0 if no modifiers.
+func parseModifiers(key string) (int, string) {
+	mods := 0
+	remaining := key
+
+	for {
+		if strings.HasPrefix(remaining, "S-") {
+			mods |= 1 // Shift
+			remaining = remaining[2:]
+		} else if strings.HasPrefix(remaining, "M-") {
+			mods |= 2 // Alt/Meta
+			remaining = remaining[2:]
+		} else if strings.HasPrefix(remaining, "C-") {
+			mods |= 4 // Control
+			remaining = remaining[2:]
+		} else {
+			break
+		}
+	}
+
+	if mods == 0 {
+		return 0, key
+	}
+	// Convert to xterm modifier code (add 1)
+	return mods + 1, remaining
+}
+
+// encodeModifiedKey creates the escape sequence for a modified key.
+// mod is the xterm modifier code (2=Shift, 3=Alt, etc.)
+func encodeModifiedKey(mod int, baseKey string) []byte {
+	modChar := byte('0' + mod)
+
+	// Handle single character with Alt (M-x)
+	if len(baseKey) == 1 {
+		if mod == 3 { // Just Alt
+			return []byte{0x1b, baseKey[0]}
+		}
+		// Alt+Shift+char or other combos - send ESC then char
+		// (terminals vary in how they handle this)
+		if mod&2 != 0 { // Has Alt
+			return []byte{0x1b, baseKey[0]}
+		}
+		return nil
+	}
+
+	// Arrow keys: ESC [ 1 ; <mod> <A-D>
+	if code, ok := arrowKeyCode[baseKey]; ok {
+		return []byte{0x1b, '[', '1', ';', modChar, code}
+	}
+
+	// Home/End: ESC [ 1 ; <mod> <H|F>
+	if code, ok := homeEndCode[baseKey]; ok {
+		return []byte{0x1b, '[', '1', ';', modChar, code}
+	}
+
+	// Tab: ESC [ 1 ; <mod> Z (or ESC [ Z for just Shift)
+	if baseKey == "Tab" {
+		if mod == 2 { // Just Shift
+			return []byte{0x1b, '[', 'Z'}
+		}
+		return []byte{0x1b, '[', '1', ';', modChar, 'Z'}
+	}
+
+	// Enter with modifiers
+	if baseKey == "Enter" {
+		if mod == 3 { // Alt+Enter
+			return []byte{0x1b, 0x0d}
+		}
+		// Other modifier combos - just send CR
+		return []byte{0x0d}
+	}
+
+	// Backspace with modifiers
+	if baseKey == "Backspace" {
+		if mod == 3 { // Alt+Backspace
+			return []byte{0x1b, 0x7f}
+		}
+		if mod == 5 { // Ctrl+Backspace
+			return []byte{0x08} // BS
+		}
+		return []byte{0x7f}
+	}
+
+	// Escape with modifiers
+	if baseKey == "Escape" {
+		if mod == 3 { // Alt+Escape
+			return []byte{0x1b, 0x1b}
+		}
+		return []byte{0x1b}
+	}
+
+	// F1-F4: ESC [ 1 ; <mod> <P-S>
+	if code, ok := f1f4Code[baseKey]; ok {
+		return []byte{0x1b, '[', '1', ';', modChar, code}
+	}
+
+	// F5-F12, Insert, Delete, PageUp, PageDown: ESC [ <code> ; <mod> ~
+	if codeStr, ok := tildeKeyCode[baseKey]; ok {
+		result := []byte{0x1b, '['}
+		result = append(result, []byte(codeStr)...)
+		result = append(result, ';', modChar, '~')
+		return result
+	}
+
+	// Space with modifiers
+	if baseKey == "Space" {
+		if mod == 3 { // Alt+Space
+			return []byte{0x1b, ' '}
+		}
+		if mod == 5 { // Ctrl+Space
+			return []byte{0x00}
+		}
+		return []byte{' '}
+	}
+
+	return nil
+}
+
+var arrowKeyCode = map[string]byte{
+	"Up":    'A',
+	"Down":  'B',
+	"Right": 'C',
+	"Left":  'D',
+}
+
+var homeEndCode = map[string]byte{
+	"Home": 'H',
+	"End":  'F',
+}
+
+var f1f4Code = map[string]byte{
+	"F1": 'P',
+	"F2": 'Q',
+	"F3": 'R',
+	"F4": 'S',
+}
+
+var tildeKeyCode = map[string]string{
+	"Insert":   "2",
+	"Delete":   "3",
+	"PageUp":   "5",
+	"PageDown": "6",
+	"F5":       "15",
+	"F6":       "17",
+	"F7":       "18",
+	"F8":       "19",
+	"F9":       "20",
+	"F10":      "21",
+	"F11":      "23",
+	"F12":      "24",
+}
+
+// keyToBytesMap maps base key names (without modifiers) to their byte sequences.
+// Modified keys are handled dynamically by encodeModifiedKey.
 var keyToBytesMap = map[string][]byte{
 	// Control keys
 	"Enter":     {13},
 	"Tab":       {9},
 	"Backspace": {127}, // Most terminals send DEL for backspace
 	"Escape":    {27},
+	"Space":     {32},
 
 	// Arrow keys
 	"Up":    {0x1b, '[', 'A'},
 	"Down":  {0x1b, '[', 'B'},
 	"Right": {0x1b, '[', 'C'},
 	"Left":  {0x1b, '[', 'D'},
-
-	// Modified arrow keys (for applications that understand them)
-	"C-Up":    {0x1b, '[', '1', ';', '5', 'A'},
-	"C-Down":  {0x1b, '[', '1', ';', '5', 'B'},
-	"C-Right": {0x1b, '[', '1', ';', '5', 'C'},
-	"C-Left":  {0x1b, '[', '1', ';', '5', 'D'},
-	"M-Up":    {0x1b, '[', '1', ';', '3', 'A'},
-	"M-Down":  {0x1b, '[', '1', ';', '3', 'B'},
-	"M-Right": {0x1b, '[', '1', ';', '3', 'C'},
-	"M-Left":  {0x1b, '[', '1', ';', '3', 'D'},
 
 	// Navigation keys
 	"Home":     {0x1b, '[', 'H'},
@@ -243,7 +394,7 @@ var keyToBytesMap = map[string][]byte{
 	"PageUp":   {0x1b, '[', '5', '~'},
 	"PageDown": {0x1b, '[', '6', '~'},
 
-	// Function keys
+	// Function keys (F1-F4 use SS3, F5+ use CSI)
 	"F1":  {0x1b, 'O', 'P'},
 	"F2":  {0x1b, 'O', 'Q'},
 	"F3":  {0x1b, 'O', 'R'},
