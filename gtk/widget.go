@@ -2361,7 +2361,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	button := btn.Button()
 
 	cellX, cellY := w.screenToCell(x, y)
-	state := btn.State()
+	state := uint(btn.State())
 	mods := gdkMouseModifiers(state)
 
 	// Check if mouse reporting should handle this event
@@ -2407,7 +2407,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	btn := gdk.EventButtonNewFromEvent(ev)
 	button := btn.Button()
-	state := btn.State()
+	state := uint(btn.State())
 	mods := gdkMouseModifiers(state)
 
 	// Check if mouse reporting should handle this event
