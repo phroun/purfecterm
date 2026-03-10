@@ -196,7 +196,8 @@ type Widget struct {
 	onResize func(cols, rows int)
 
 	// Context menu
-	contextMenu *qt.QMenu
+	contextMenu          *qt.QMenu
+	mouseReportingAction *qt.QAction // Toggle for mouse reporting (nil if feature disabled)
 
 	// Scrollbar update flag
 	scrollbarUpdating bool
@@ -811,11 +812,25 @@ func (w *Widget) getFontForCharacter(r rune, mainFont string, fontSize int) stri
 	return mainFont
 }
 
-// SetMouseReportingEnabled enables or disables xterm mouse event reporting
+// SetMouseReportingEnabled enables or disables xterm mouse event reporting.
+// When enabled, a toggle menu item is added to the context menu.
 func (w *Widget) SetMouseReportingEnabled(enabled bool) {
 	w.mu.Lock()
 	w.mouseReportingEnabled = enabled
 	w.mu.Unlock()
+
+	// Add context menu item when first enabled
+	if enabled && w.mouseReportingAction == nil && w.contextMenu != nil {
+		w.contextMenu.AddSeparator()
+		w.mouseReportingAction = w.contextMenu.AddAction("Mouse Reporting")
+		w.mouseReportingAction.SetCheckable(true)
+		w.mouseReportingAction.SetChecked(true)
+		w.mouseReportingAction.OnTriggered(func() {
+			w.mu.Lock()
+			w.mouseReportingEnabled = w.mouseReportingAction.IsChecked()
+			w.mu.Unlock()
+		})
+	}
 }
 
 // SetInputCallback sets the callback for handling input

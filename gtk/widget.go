@@ -346,11 +346,11 @@ type Widget struct {
 
 	// GTK widgets
 	drawingArea    *gtk.DrawingArea
-	scrollbar      *gtk.Scrollbar // Vertical scrollbar
-	horizScrollbar *gtk.Scrollbar // Horizontal scrollbar
-	box            *gtk.Box       // Outer vertical box
-	innerBox       *gtk.Box       // Inner horizontal box (drawingArea + vscrollbar)
-	bottomBox      *gtk.Box       // Bottom horizontal box (hscrollbar + corner)
+	scrollbar      *gtk.Scrollbar   // Vertical scrollbar
+	horizScrollbar *gtk.Scrollbar   // Horizontal scrollbar
+	box            *gtk.Box         // Outer vertical box
+	innerBox       *gtk.Box         // Inner horizontal box (drawingArea + vscrollbar)
+	bottomBox      *gtk.Box         // Bottom horizontal box (hscrollbar + corner)
 	cornerArea     *gtk.DrawingArea // Corner area between scrollbars
 
 	// Terminal state
@@ -415,7 +415,8 @@ type Widget struct {
 	clipboard *gtk.Clipboard
 
 	// Context menu for right-click
-	contextMenu *gtk.Menu
+	contextMenu            *gtk.Menu
+	mouseReportingMenuItem *gtk.CheckMenuItem // Toggle for mouse reporting (nil if feature disabled)
 
 	// Terminal capabilities (for PawScript channel integration)
 	// Automatically updated on resize
@@ -958,8 +959,8 @@ func (w *Widget) renderCustomGlyph(cr *cairo.Context, cell *purfecterm.Cell, cel
 
 	// Determine cache key flags based on palette characteristics
 	var paletteHash uint64
-	usesDefaultFG := true  // Default to true for fallback mode (no palette)
-	usesBg := true         // Default to true for fallback mode
+	usesDefaultFG := true // Default to true for fallback mode (no palette)
+	usesBg := true        // Default to true for fallback mode
 	isSingleEntry := false
 
 	if palette != nil {
@@ -1331,11 +1332,29 @@ func (w *Widget) onCornerButtonPress(da *gtk.DrawingArea, event *gdk.Event) bool
 	return false
 }
 
-// SetMouseReportingEnabled enables or disables xterm mouse event reporting
+// SetMouseReportingEnabled enables or disables xterm mouse event reporting.
+// When enabled, a toggle menu item is added to the context menu.
 func (w *Widget) SetMouseReportingEnabled(enabled bool) {
 	w.mu.Lock()
 	w.mouseReportingEnabled = enabled
 	w.mu.Unlock()
+
+	// Add/remove context menu item based on enabled state
+	if enabled && w.mouseReportingMenuItem == nil && w.contextMenu != nil {
+		// Add separator and mouse reporting toggle
+		separator, _ := gtk.SeparatorMenuItemNew()
+		w.contextMenu.Append(separator)
+
+		w.mouseReportingMenuItem, _ = gtk.CheckMenuItemNewWithLabel("Mouse Reporting")
+		w.mouseReportingMenuItem.SetActive(true) // Default to enabled
+		w.mouseReportingMenuItem.Connect("toggled", func() {
+			w.mu.Lock()
+			w.mouseReportingEnabled = w.mouseReportingMenuItem.GetActive()
+			w.mu.Unlock()
+		})
+		w.contextMenu.Append(w.mouseReportingMenuItem)
+		w.contextMenu.ShowAll()
+	}
 }
 
 // SetInputCallback sets the callback for handling input
@@ -2704,9 +2723,7 @@ func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 	}
 
-	// Check for Shift modifier for horizontal scrolling
-	hasShift := state&gdk.SHIFT_MASK != 0
-
+	// Shift+scroll = horizontal scrolling
 	maxOffset := w.buffer.GetMaxScrollOffset()
 
 	switch dir {
