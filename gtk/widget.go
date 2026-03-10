@@ -2362,42 +2362,55 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 
 	cellX, cellY := w.screenToCell(x, y)
 	state := uint(btn.State())
-	mods := gdkMouseModifiers(state)
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
 
-	// Check if mouse reporting should handle this event
+	// Determine if we should forward to PTY or handle locally
+	// Shift reverses the mode: when tracking active, Shift = local selection
+	// When tracking inactive, Shift has no special effect
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	// Right-click: Shift+right always shows context menu
+	if button == 3 {
+		if forwardToPTY && !hasShift {
+			// Forward right-click to PTY
+			mods := gdkMouseModifiers(state)
+			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			da.GrabFocus()
+			return true
+		}
+		// Show context menu (either no tracking, or Shift held)
+		if w.contextMenu != nil {
+			w.contextMenu.PopupAtPointer(ev)
+		}
+		return true
+	}
+
+	// Left/middle button
+	if forwardToPTY {
 		var mouseBtn int
 		switch button {
 		case 1:
 			mouseBtn = purfecterm.MouseButtonLeft
 		case 2:
 			mouseBtn = purfecterm.MouseButtonMiddle
-		case 3:
-			mouseBtn = purfecterm.MouseButtonRight
 		default:
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
+		mods := gdkMouseModifiers(state)
+		w.mouseDown = true // Track for motion events
 		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
 		da.GrabFocus()
 		return true
 	}
 
-	if button == 1 { // Left button
-		// Record press position but don't start selection yet
+	if button == 1 { // Left button - local selection
 		w.mouseDown = true
 		w.mouseDownX = cellX
 		w.mouseDownY = cellY
 		w.selectionMoved = false
 		w.buffer.ClearSelection()
 		da.GrabFocus()
-		return true
-	}
-
-	if button == 3 { // Right button - show context menu
-		if w.contextMenu != nil {
-			w.contextMenu.PopupAtPointer(ev)
-		}
 		return true
 	}
 
@@ -2408,11 +2421,12 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	btn := gdk.EventButtonNewFromEvent(ev)
 	button := btn.Button()
 	state := uint(btn.State())
-	mods := gdkMouseModifiers(state)
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
 
-	// Check if mouse reporting should handle this event
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		x, y := btn.X(), btn.Y()
 		cellX, cellY := w.screenToCell(x, y)
 		var mouseBtn int
@@ -2426,13 +2440,15 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		default:
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
+		mods := gdkMouseModifiers(state)
+		w.mouseDown = false
 		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
 		return true
 	}
 
 	if button == 1 {
 		w.mouseDown = false
-		w.stopAutoScroll() // Stop any auto-scrolling
+		w.stopAutoScroll()
 		if w.selecting {
 			w.selecting = false
 			w.buffer.EndSelection()
@@ -2447,13 +2463,18 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	C.get_event_coords((*C.GdkEvent)(unsafe.Pointer(ev.Native())), &x, &y)
 	cellX, cellY := w.screenToCell(float64(x), float64(y))
 
+	motion := (*C.GdkEventMotion)(unsafe.Pointer(ev.Native()))
+	state := uint(motion.state)
+	hasShift := state&uint(gdk.SHIFT_MASK) != 0
+
 	// Check if mouse reporting should handle motion events
+	// Shift bypasses mouse reporting for local selection
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		// Mode 1003 reports all motion; mode 1002 reports motion while button down
 		if trackingMode == 1003 || (trackingMode == 1002 && w.mouseDown) {
-			motion := (*C.GdkEventMotion)(unsafe.Pointer(ev.Native()))
-			state := uint(motion.state)
 			mods := gdkMouseModifiers(state)
 			btn := purfecterm.MouseButtonNone | purfecterm.MouseMotionFlag
 			if w.mouseDown {
@@ -2660,10 +2681,14 @@ func (w *Widget) onScroll(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	scroll := gdk.EventScrollNewFromEvent(ev)
 	dir := scroll.Direction()
 	state := scroll.State()
+	hasShift := state&gdk.SHIFT_MASK != 0
 
 	// Check if mouse reporting should handle scroll events
+	// Shift bypasses mouse reporting for local scrollback
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		mods := gdkMouseModifiers(uint(state))
 		// Get scroll event coordinates
 		var sx, sy C.double

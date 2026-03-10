@@ -2686,29 +2686,50 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 	pos := event.Pos()
 	cellX, cellY := w.screenToCell(pos.X(), pos.Y())
 	modifiers := event.Modifiers()
-	mods := qtMouseModifiers(modifiers)
+	hasShift := modifiers&qt.ShiftModifier != 0
 
-	// Check if mouse reporting should handle this event
+	// Determine if we should forward to PTY or handle locally
+	// Shift reverses the mode: when tracking active, Shift = local selection
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	button := event.Button()
+
+	// Right-click: Shift+right always shows context menu
+	if button == qt.RightButton {
+		if forwardToPTY {
+			// Forward right-click to PTY
+			mods := qtMouseModifiers(modifiers)
+			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			w.widget.SetFocus()
+			return
+		}
+		// Show context menu (either no tracking, or Shift held)
+		if w.contextMenu != nil {
+			w.contextMenu.Popup2(event.GlobalPos(), nil)
+		}
+		return
+	}
+
+	// Left/middle button
+	if forwardToPTY {
 		var mouseBtn int
-		switch event.Button() {
+		switch button {
 		case qt.LeftButton:
 			mouseBtn = purfecterm.MouseButtonLeft
 		case qt.MiddleButton:
 			mouseBtn = purfecterm.MouseButtonMiddle
-		case qt.RightButton:
-			mouseBtn = purfecterm.MouseButtonRight
 		default:
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
+		mods := qtMouseModifiers(modifiers)
 		w.mouseDown = true
 		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
 		w.widget.SetFocus()
 		return
 	}
 
-	if event.Button() == qt.LeftButton {
+	if button == qt.LeftButton {
 		w.mouseDown = true
 		w.mouseDownX = cellX
 		w.mouseDownY = cellY
@@ -2719,12 +2740,15 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 }
 
 func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
-	// Check if mouse reporting should handle this event
+	modifiers := event.Modifiers()
+	hasShift := modifiers&qt.ShiftModifier != 0
+
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		pos := event.Pos()
 		cellX, cellY := w.screenToCell(pos.X(), pos.Y())
-		modifiers := event.Modifiers()
 		mods := qtMouseModifiers(modifiers)
 		var mouseBtn int
 		switch event.Button() {
@@ -2755,12 +2779,16 @@ func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
 func (w *Widget) mouseMoveEvent(event *qt.QMouseEvent) {
 	pos := event.Pos()
 	cellX, cellY := w.screenToCell(pos.X(), pos.Y())
+	modifiers := event.Modifiers()
+	hasShift := modifiers&qt.ShiftModifier != 0
 
 	// Check if mouse reporting should handle motion events
+	// Shift bypasses mouse reporting for local selection
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		if trackingMode == 1003 || (trackingMode == 1002 && w.mouseDown) {
-			modifiers := event.Modifiers()
 			mods := qtMouseModifiers(modifiers)
 			btn := purfecterm.MouseButtonNone | purfecterm.MouseMotionFlag
 			if w.mouseDown {
@@ -2963,8 +2991,11 @@ func (w *Widget) wheelEvent(event *qt.QWheelEvent) {
 	deltaX := event.AngleDelta().X()
 
 	// Check if mouse reporting should handle scroll events
+	// Shift bypasses mouse reporting for local scrollback
 	trackingMode := w.buffer.GetMouseTrackingMode()
-	if w.mouseReportingEnabled && trackingMode != 0 {
+	forwardToPTY := w.mouseReportingEnabled && trackingMode != 0 && !hasShift
+
+	if forwardToPTY {
 		mods := qtMouseModifiers(modifiers)
 		wpos := event.Position()
 		cellX, cellY := w.screenToCell(int(wpos.X()), int(wpos.Y()))
