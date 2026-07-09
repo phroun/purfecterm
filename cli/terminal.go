@@ -9,9 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"sync"
-	"syscall"
 
 	"github.com/phroun/purfecterm"
 	"golang.org/x/term"
@@ -291,22 +289,6 @@ func (t *Terminal) Start() error {
 	go t.renderer.RenderLoop()
 
 	return nil
-}
-
-// handleSIGWINCH listens for terminal resize signals
-func (t *Terminal) handleSIGWINCH() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGWINCH)
-	defer signal.Stop(sigChan)
-
-	for {
-		select {
-		case <-sigChan:
-			t.handleResize()
-		case <-t.done:
-			return
-		}
-	}
 }
 
 // handleResize updates terminal size when the host terminal is resized
