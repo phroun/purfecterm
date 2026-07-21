@@ -267,6 +267,7 @@ func (b *Buffer) writeCharInternal(ch rune) {
 		BGP:               b.currentBGP,
 		XFlip:             b.currentXFlip,
 		YFlip:             b.currentYFlip,
+		Font:              b.currentFont,
 	}
 
 	// Use the calculated charWidth (already accounts for custom glyphs and ambiguous width mode)

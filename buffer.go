@@ -205,6 +205,12 @@ type Buffer struct {
 	currentXFlip bool // Current horizontal flip attribute
 	currentYFlip bool // Current vertical flip attribute
 
+	// Font slots: the current slot (SGR 10..20) written into new cells, and
+	// the per-terminal slot -> family-name map a renderer resolves through its
+	// shared font engine. Unset slots (and slot 0) render in the primary face.
+	currentFont uint8
+	fontSlots   map[uint8]string
+
 	// Global palette and glyph storage (shared across all cells)
 	palettes     map[int]*Palette      // Palette number -> Palette
 	customGlyphs map[rune]*CustomGlyph // Rune -> CustomGlyph
@@ -260,6 +266,7 @@ func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 		preferredDarkTheme:  true, // User preference defaults to dark
 		lineDensity:         25,            // Default line density
 		currentBGP:          -1,            // -1 = use foreground color code as palette
+		fontSlots:           map[uint8]string{},
 		palettes:     make(map[int]*Palette),
 		customGlyphs: make(map[rune]*CustomGlyph),
 		sprites:             make(map[int]*Sprite),
@@ -884,6 +891,58 @@ func (b *Buffer) ResetAttributes() {
 	b.currentReverse = false
 	b.currentBlink = false
 	b.currentStrikethrough = false
+	b.currentFont = 0
+}
+
+// SetFont sets the current font slot (0..10) written into subsequent cells.
+// Values are clamped to the valid range.
+func (b *Buffer) SetFont(slot int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if slot < 0 {
+		slot = 0
+	}
+	if slot > 10 {
+		slot = 10
+	}
+	b.currentFont = uint8(slot)
+}
+
+// GetFont returns the current font slot.
+func (b *Buffer) GetFont() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return int(b.currentFont)
+}
+
+// SetFontSlot maps a font slot (0..10) to a family name for THIS terminal; a
+// renderer resolves the name through its shared font engine. Empty family
+// clears the slot (it then inherits slot 0). Slot 0 is the primary face.
+func (b *Buffer) SetFontSlot(slot int, family string) {
+	if slot < 0 || slot > 10 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if family == "" {
+		delete(b.fontSlots, uint8(slot))
+		return
+	}
+	b.fontSlots[uint8(slot)] = family
+}
+
+// GetFontSlot returns the family configured for a slot, falling back to slot
+// 0's family, then "" (the renderer's default primary) when neither is set.
+func (b *Buffer) GetFontSlot(slot int) string {
+	if slot < 0 || slot > 10 {
+		return ""
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if fam, ok := b.fontSlots[uint8(slot)]; ok {
+		return fam
+	}
+	return b.fontSlots[0]
 }
 
 // SetForeground sets the current foreground color
