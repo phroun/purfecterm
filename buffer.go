@@ -951,6 +951,13 @@ func (b *Buffer) GetFontSlot(slot int) string {
 	if fam, ok := b.fontSlots[uint8(slot)]; ok {
 		return fam
 	}
+	// Slot 10 is SGR 20 (fraktur): unless the app maps it, it resolves to the
+	// reserved VTFRAKTUR family name so a renderer can recognize the VT100
+	// fraktur request (real passthrough, a cipher, or its own choice) rather
+	// than silently inheriting the primary face.
+	if slot == VTFrakturSlot {
+		return VTFrakturFont
+	}
 	return b.fontSlots[0]
 }
 
