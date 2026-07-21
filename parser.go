@@ -906,6 +906,8 @@ func (p *Parser) executeOSC() {
 		p.executeOSCSprite(args)
 	case 7004: // Font-slot configuration
 		p.executeOSCFont(args)
+	case 7005: // Script-class font configuration
+		p.executeOSCScriptFont(args)
 	case 7003: // Screen crop and splits
 		p.executeOSCScreenCrop(args)
 	// Other OSC commands (title, etc.) could be added here
@@ -1302,6 +1304,34 @@ func (p *Parser) executeOSCFont(args string) {
 			if slot, err := strconv.Atoi(parts[1]); err == nil {
 				p.buffer.SetFontSlot(slot, parts[2])
 			}
+		}
+	}
+}
+
+// executeOSCScriptFont handles OSC 7005 script-class font commands, configuring
+// the per-terminal script-class -> family map a renderer consults (via
+// ScriptClass) when the primary font can't cover a glyph.
+// Format: ESC ] 7005 ; cmd BEL
+// Commands:
+//
+//	s;CLASS;FAMILY - map script class CLASS (hebrew/arabic/cjk) to family FAMILY
+//	sd;CLASS       - clear class CLASS (renderer falls back to its default)
+//	sda            - clear all script-class mappings
+func (p *Parser) executeOSCScriptFont(args string) {
+	parts := strings.SplitN(args, ";", 3)
+	if len(parts) == 0 {
+		return
+	}
+	switch parts[0] {
+	case "sda": // clear all
+		p.buffer.ClearScriptFonts()
+	case "sd": // clear one
+		if len(parts) >= 2 {
+			p.buffer.SetScriptFont(parts[1], "")
+		}
+	case "s": // set class -> family
+		if len(parts) >= 3 {
+			p.buffer.SetScriptFont(parts[1], parts[2])
 		}
 	}
 }

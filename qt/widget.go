@@ -793,6 +793,14 @@ func (w *Widget) getFontForCharacter(r rune, mainFont string, fontSize int) stri
 		return mainFont
 	}
 
+	// Script-class font (OSC 7005): an app-chosen face for this rune's script
+	// (Hebrew/Arabic/CJK) takes precedence over the generic fallbacks below.
+	if cls := purfecterm.ScriptClass(r); cls != "" {
+		if fam := w.buffer.GetScriptFont(cls); fam != "" {
+			return fam
+		}
+	}
+
 	w.mu.Lock()
 	unicodeFont := w.fontFamilyUnicode
 	cjkFont := w.fontFamilyCJK

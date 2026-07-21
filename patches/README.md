@@ -7,6 +7,13 @@ which KittyTK now consumes directly, its private copy retired). This
 directory remains as the development record; PROTOCOL.md's contract now
 lives with the purfecterm repo.
 
+**v0.2.24** landed the font-slot **machine model** (item 3 below):
+`Cell.Font`, the buffer slot API, SGR 10-20, and OSC 7004. **v0.2.25** then
+landed the **renderer wiring** (item 4): the gtk/qt widgets now honor
+`cell.Font`. Both are upstream; the KittyTK gfx/SDL renderer honors slots in
+the kittytk tree. This directory keeps the patch artifacts as the development
+record.
+
 Verified patches for the purfecterm repo, developed from the mew/KittyTK
 integration work:
 
@@ -18,13 +25,43 @@ integration work:
    contract). **LANDED in v0.2.23.**
 2. **Arabic contextual joining** — below. **LANDED in v0.2.23**
    (`ShapeArabicCellVisual` exported).
-3. **Font slots (SGR 10-20 + OSC 7004)** — per-cell font selection. See the
-   "Font slots" section of `PROTOCOL.md` (wire protocol + machine model),
-   `font-slots.patch` (unified diff for cell.go, buffer.go, buffer_output.go,
-   parser.go, cli/terminal.go against v0.2.23), and `_src/fontslot_test.go` +
-   `_src/cli_fontslot_test.go` (drop-in tests). Verified: patched v0.2.23 tree
-   builds and the full root + cli suites pass. **Not yet landed upstream** —
-   apply with `patch -p1 < font-slots.patch` from the purfecterm root.
+3. **Font slots — machine model (SGR 10-20 + OSC 7004)** — per-cell font
+   selection. See the "Font slots" section of `PROTOCOL.md` (wire protocol +
+   machine model), `font-slots.patch` (unified diff for cell.go, buffer.go,
+   buffer_output.go, parser.go, cli/terminal.go against v0.2.23), and
+   `_src/fontslot_test.go` + `_src/cli_fontslot_test.go` (drop-in tests).
+   **LANDED in v0.2.24** (`Cell.Font`, `Buffer.SetFont/GetFont/SetFontSlot/
+   GetFontSlot`, SGR 10-20, OSC 7004, `cli.RenderedCell.Font`).
+4. **Font slots — GTK + Qt renderers honor `cell.Font`** — the per-cell
+   renderers still paint every glyph in the primary face; this teaches them to
+   read the slot. `font-slots-renderers.patch` (unified diff for gtk/widget.go
+   and qt/widget.go **against v0.2.24**) adds a `cellFontFamily(cell, primary)`
+   helper to each widget and routes the per-cell font through it: slot 0 (and
+   any unconfigured slot) stays the primary family; a configured slot names its
+   own family, still subject to the existing per-character CJK/Unicode fallback.
+   Both the main paint and the split-view paint are covered. Apply with
+   `patch -p1 < font-slots-renderers.patch` from the purfecterm root. **LANDED
+   in v0.2.25.** (The KittyTK gfx trinket — the SDL path — honors `cell.Font`
+   in the kittytk tree; this patch brought gtk/qt to parity.)
+
+   *Compile note:* gtk/qt need their system toolkits (pango/gdk, Qt) present to
+   build, so these two hunks were verified by patch-applies-clean + gofmt +
+   review rather than a local `go build`; the change mirrors the existing
+   `getFontForCharacter(cell.Char, fontFamily, …)` idiom, substituting the
+   slot-resolved family for the bare primary.
+5. **Script-class fonts (OSC 7005)** — the *automatic* per-script counterpart
+   to the app-selected font slots: a per-terminal map from a script class
+   (`hebrew`/`arabic`/`cjk`) to the family a renderer uses when the primary
+   can't cover a glyph of that script, so the standalone gtk/qt builds render
+   RTL + CJK reliably (as the KittyTK/SDL renderer already does via its engine).
+   See the "Script-class fonts" section of `PROTOCOL.md`,
+   `font-scriptclass.patch` (buffer.go, scriptclass.go [new], parser.go,
+   gtk/widget.go, qt/widget.go **against v0.2.25**), and
+   `_src/scriptfont_test.go`. Adds `Buffer.SetScriptFont/GetScriptFont/
+   ClearScriptFonts`, the exported `ScriptClass(rune)`, OSC 7005 (`s`/`sd`/`sda`),
+   and a script-class branch in each widget's `getFontForCharacter`. Verified:
+   patched v0.2.25 root + cli suites pass; gtk/qt by patch-applies-clean + gofmt
+   + review (same toolkit caveat as item 4). **Not yet landed upstream.**
 
 ---
 
