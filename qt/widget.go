@@ -2709,7 +2709,7 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	encodingMode := w.buffer.GetMouseEncodingMode()
 	// screenToCell yields a LOGICAL cell index. Under the standard contract
 	// the hosted application addresses in VISUAL columns, so translate; under
-	// flex mode (?2027h) it addresses logical cells, so report as-is.
+	// flex mode (?7027h) it addresses logical cells, so report as-is.
 	reportX := cellX
 	if !w.buffer.IsFlexWidthModeEnabled() {
 		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)

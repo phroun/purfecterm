@@ -47,20 +47,51 @@ The universal wcwidth contract:
   buffer-side consumers translate with `VisualColToLogical`).
 - DECDWL/DECDHL rows address per doubled cell (max cols/2), like hardware.
 
-## Contract B — FLEX (DECSET ?2027h, opt-in)
+## Contract B — FLEX (DECSET ?7027h, opt-in)
 
 Unchanged from today: one logical cell per character; `CellWidth` may be
 0.5/1.0/1.5/2.0; ambiguous auto-matching; visual-width wrap only under
-?2028; CUP/CHA/CUF/CUB/HT address LOGICAL cells; overwrites are logical (the
+?7028; CUP/CHA/CUF/CUB/HT address LOGICAL cells; overwrites are logical (the
 application owns row geometry — mew handles this with whole-row rewrites when
-a row's width profile changes). An application that sends ?2027h declares it
+a row's width profile changes). An application that sends ?7027h declares it
 speaks this contract.
 
-Note for the future: the terminal-wg is standardizing mode 2027 with
-*different* semantics (grapheme clustering over visual columns). Before the
-ecosystem grows, consider moving flex to a private number (e.g. ?7027) and
-letting ?2027 mean only "cluster combining sequences", which Contract A
-already effectively provides. `visualprotocol.go` is agnostic to the number.
+## Private-mode numbering: the 7000s are PurfecTerm
+
+The terminal-wg is standardizing mode 2027 with *different* semantics
+(grapheme clustering over visual columns), so PurfecTerm's width family has
+moved off the 2027–2030 block onto its own private block. One mnemonic across
+the whole system: **7000s means PurfecTerm** — in the OSC namespace
+(7000–7003 graphics) and now in the DECSET/DECRST mode namespace.
+
+**Reserved: DECSET/DECRST 7020–7049 is the PurfecTerm private-mode block.**
+Future modes (sprite/tile modes, whatever the tracker needs) live here
+without another naming decision.
+
+Width-family migration (clean break — no `?2027h` flex alias kept):
+
+| old   | new   | meaning                          |
+|-------|-------|----------------------------------|
+| ?2027 | ?7027 | flex width (Contract B opt-in)   |
+| ?2028 | ?7028 | visual-width line wrap           |
+| ?2029 | ?7029 | ambiguous width: narrow          |
+| ?2030 | ?7030 | ambiguous width: wide            |
+
+**?2027 gets a second life, not a tombstone.** PurfecTerm now accepts
+`?2027` with its standards-track meaning and treats it as *inherently
+satisfied*: combining marks are always clustered (`appendCombiningMark`) and
+the default STANDARD contract already advances the cursor by visual-column
+width — exactly what a terminal-wg-2027 probe is asking for. There is no
+state to toggle; when DECRQM lands, report 2027 as set/always. The pleasant
+side effect: mew's startup `?2027h` becomes correct on *every* terminal it
+runs in — real terminals switch on standards grapheme clustering, PurfecTerm
+acks it as built-in — while `?7027h` stays the deliberate handshake for true
+flex clients only. `visualprotocol.go` is agnostic to the number.
+
+Sweep sites (for the record): parser's DECSET cases (2027 repurposed;
+7027–7030 added) and `buffer_scrollback.go`'s per-run re-emission
+(`?7027h/l`, `?7028h`, `?7029h`, `?7030h`). Nothing else in the module
+hardcodes the numbers.
 
 ## The patch
 

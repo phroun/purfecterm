@@ -8,7 +8,7 @@ package purfecterm
 // the DEFAULT protocol a hosted application sees must be the standard
 // terminal contract every wcwidth-based program assumes: a wide glyph
 // occupies two columns, printing it advances the cursor two columns, and
-// CUP/CHA/CUF/CUB/HT address VISUAL columns. Flex mode (DECSET 2027) remains
+// CUP/CHA/CUF/CUB/HT address VISUAL columns. Flex mode (DECSET 7027) remains
 // the opt-in enhanced contract with logical addressing and fractional widths.
 //
 // This file supplies the boundary translation, so the parser hunks stay
@@ -30,7 +30,7 @@ package purfecterm
 
 // standardCharWidth returns the wcwidth-compatible column width (1.0 or 2.0)
 // used for cells written while flex mode is off: East Asian Wide/Fullwidth
-// are 2.0; ambiguous-width characters follow the 2029/2030 setting (narrow
+// are 2.0; ambiguous-width characters follow the 7029/7030 setting (narrow
 // unless AmbiguousWidthWide — deterministic, unlike flex auto-matching);
 // everything else is 1.0. Combining marks never reach here (they attach to
 // the previous cell before width assignment).

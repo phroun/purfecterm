@@ -802,11 +802,17 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			}
 		case 2004: // Bracketed paste mode
 			p.buffer.SetBracketedPasteMode(set)
-		case 2027: // Flexible East Asian Width mode
+		case 2027: // terminal-wg grapheme clustering: accepted, inherently satisfied.
+			// PurfecTerm always clusters combining marks (appendCombiningMark) and
+			// the default STANDARD contract already advances the cursor by visual
+			// column width — exactly what a mode-2027 probe asks for. There is no
+			// state to toggle; report it set under DECRQM when that lands. Flex
+			// mode moved to the private ?7027 to avoid colliding with this.
+		case 7027: // PurfecTerm: Flexible East Asian Width mode (Contract B opt-in)
 			p.buffer.SetFlexWidthMode(set)
-		case 2028: // Visual width-based line wrapping
+		case 7028: // PurfecTerm: Visual width-based line wrapping
 			p.buffer.SetVisualWidthWrap(set)
-		case 2029: // Ambiguous width: narrow (1.0)
+		case 7029: // PurfecTerm: Ambiguous width: narrow (1.0)
 			if set {
 				p.buffer.SetAmbiguousWidthMode(AmbiguousWidthNarrow)
 			} else {
@@ -815,7 +821,7 @@ func (p *Parser) executePrivateModeSet(set bool) {
 					p.buffer.SetAmbiguousWidthMode(AmbiguousWidthAuto)
 				}
 			}
-		case 2030: // Ambiguous width: wide (2.0)
+		case 7030: // PurfecTerm: Ambiguous width: wide (2.0)
 			if set {
 				p.buffer.SetAmbiguousWidthMode(AmbiguousWidthWide)
 			} else {

@@ -136,7 +136,7 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	shouldWrap := false
 	if (b.visualWidthWrap && b.currentFlexWidth) || !b.currentFlexWidth {
 		// Visual width wrap: standard mode always wraps on accumulated visual
-		// width (the wcwidth contract); flex mode only under ?2028.
+		// width (the wcwidth contract); flex mode only under ?7028.
 		currentVisualWidth := b.getLineVisualWidth(b.cursorY, b.cursorX)
 		shouldWrap = (currentVisualWidth + charWidth) > float64(effectiveCols)
 	} else {
