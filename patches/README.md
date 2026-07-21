@@ -1,3 +1,33 @@
+# PurfecTerm patches
+
+**STATUS: LANDED upstream in purfecterm v0.2.23** (standard-by-default
+protocol, ?7027 renumber with ?2027 accepted as inherently satisfied, CLI
+renderer visual emission, and the exported ShapeArabicCellVisual shaper —
+which KittyTK now consumes directly, its private copy retired). This
+directory remains as the development record; PROTOCOL.md's contract now
+lives with the purfecterm repo.
+
+Verified patches for the purfecterm repo, developed from the mew/KittyTK
+integration work:
+
+1. **Standard-by-default protocol** — see `PROTOCOL.md` (the contract),
+   `_src/visualprotocol.go` + `_src/arabicshape.go` (drop-in root-package files; the `_src/` name keeps the Go tool from compiling them inside this repo),
+   `standard-default.patch` (unified diff for parser.go, buffer_output.go, and cli/renderer.go,
+   verified: patched tree builds and `visualprotocol_test.go` passes against
+   v0.2.22), and `_src/visualprotocol_test.go` (drop-in test locking the
+   contract). **LANDED in v0.2.23.**
+2. **Arabic contextual joining** — below. **LANDED in v0.2.23**
+   (`ShapeArabicCellVisual` exported).
+3. **Font slots (SGR 10-20 + OSC 7004)** — per-cell font selection. See the
+   "Font slots" section of `PROTOCOL.md` (wire protocol + machine model),
+   `font-slots.patch` (unified diff for cell.go, buffer.go, buffer_output.go,
+   parser.go, cli/terminal.go against v0.2.23), and `_src/fontslot_test.go` +
+   `_src/cli_fontslot_test.go` (drop-in tests). Verified: patched v0.2.23 tree
+   builds and the full root + cli suites pass. **Not yet landed upstream** —
+   apply with `patch -p1 < font-slots.patch` from the purfecterm root.
+
+---
+
 # PurfecTerm patch: Arabic contextual joining for the per-cell renderers
 
 ## The bug
