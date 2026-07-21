@@ -35,6 +35,16 @@ type Cell struct {
 	Font           uint8   // Font slot 0..10: 0 = primary (SGR 10), 1..9 = alternates (SGR 11..19), 10 = fraktur (SGR 20). A renderer maps the slot to a family; unset slots inherit slot 0.
 }
 
+const (
+	// VTFrakturSlot is the font slot for SGR 20 (fraktur): the last alternate.
+	VTFrakturSlot = 10
+	// VTFrakturFont is the reserved family name GetFontSlot returns for the
+	// fraktur slot when the app hasn't mapped it — the well-known signal that a
+	// cell came from a VT100 fraktur (SGR 20) request. The CLI renderer emits
+	// real SGR 20 for such cells; other renderers may cipher or substitute.
+	VTFrakturFont = "VTFRAKTUR"
+)
+
 // String returns the full character including any combining marks
 func (c *Cell) String() string {
 	if c.Combining == "" {

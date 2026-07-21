@@ -182,6 +182,7 @@ func (r *Renderer) Render() {
 	currentReverse := false
 	currentBlink := false
 	currentStrikethrough := false
+	currentFraktur := false
 	firstAttr := true
 
 	// Render each cell. vx tracks the VISUAL column where the cell lands on
@@ -255,7 +256,8 @@ func (r *Renderer) Render() {
 					(currentUnderline && !cell.Underline) ||
 					(currentReverse && !cell.Reverse) ||
 					(currentBlink && !cell.Blink) ||
-					(currentStrikethrough && !cell.Strikethrough) {
+					(currentStrikethrough && !cell.Strikethrough) ||
+					(currentFraktur && cell.Font != purfecterm.VTFrakturSlot) {
 					needsReset = true
 				}
 			}
@@ -268,6 +270,7 @@ func (r *Renderer) Render() {
 				currentReverse = false
 				currentBlink = false
 				currentStrikethrough = false
+				currentFraktur = false
 				currentFg = purfecterm.Color{}
 				currentBg = purfecterm.Color{}
 			}
@@ -293,6 +296,11 @@ func (r *Renderer) Render() {
 			if cell.Strikethrough && !currentStrikethrough {
 				sgr = append(sgr, "9")
 				currentStrikethrough = true
+			}
+			// SGR 20 fraktur: a font-slot-10 (VTFRAKTUR) cell emits real fraktur.
+			if cell.Font == purfecterm.VTFrakturSlot && !currentFraktur {
+				sgr = append(sgr, "20")
+				currentFraktur = true
 			}
 
 			// Add colors
@@ -524,6 +532,7 @@ func (r *Renderer) RenderToString() string {
 	currentReverse := false
 	currentBlink := false
 	currentStrikethrough := false
+	currentFraktur := false
 	firstAttr := true
 
 	// Render each cell (vx = visual column on the host terminal; see Render).
@@ -562,7 +571,8 @@ func (r *Renderer) RenderToString() string {
 					(currentUnderline && !cell.Underline) ||
 					(currentReverse && !cell.Reverse) ||
 					(currentBlink && !cell.Blink) ||
-					(currentStrikethrough && !cell.Strikethrough) {
+					(currentStrikethrough && !cell.Strikethrough) ||
+					(currentFraktur && cell.Font != purfecterm.VTFrakturSlot) {
 					needsReset = true
 				}
 			}
@@ -575,6 +585,7 @@ func (r *Renderer) RenderToString() string {
 				currentReverse = false
 				currentBlink = false
 				currentStrikethrough = false
+				currentFraktur = false
 				currentFg = purfecterm.Color{}
 				currentBg = purfecterm.Color{}
 			}
@@ -600,6 +611,11 @@ func (r *Renderer) RenderToString() string {
 			if cell.Strikethrough && !currentStrikethrough {
 				sgr = append(sgr, "9")
 				currentStrikethrough = true
+			}
+			// SGR 20 fraktur: a font-slot-10 (VTFRAKTUR) cell emits real fraktur.
+			if cell.Font == purfecterm.VTFrakturSlot && !currentFraktur {
+				sgr = append(sgr, "20")
+				currentFraktur = true
 			}
 
 			// Add colors
