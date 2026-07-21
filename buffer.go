@@ -1,6 +1,7 @@
 package purfecterm
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -211,6 +212,13 @@ type Buffer struct {
 	currentFont uint8
 	fontSlots   map[uint8]string
 
+	// Script-class fonts: a per-terminal map from a script class
+	// ("hebrew"/"arabic"/"cjk") to the family a renderer uses when the primary
+	// font can't cover a glyph of that script (see ScriptClass, OSC 7005). It
+	// is automatic — keyed by the glyph's script, not selected by the app per
+	// cell — and orthogonal to the font slots.
+	scriptFonts map[string]string
+
 	// Global palette and glyph storage (shared across all cells)
 	palettes     map[int]*Palette      // Palette number -> Palette
 	customGlyphs map[rune]*CustomGlyph // Rune -> CustomGlyph
@@ -267,6 +275,7 @@ func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 		lineDensity:         25,            // Default line density
 		currentBGP:          -1,            // -1 = use foreground color code as palette
 		fontSlots:           map[uint8]string{},
+		scriptFonts:        map[string]string{},
 		palettes:     make(map[int]*Palette),
 		customGlyphs: make(map[rune]*CustomGlyph),
 		sprites:             make(map[int]*Sprite),
@@ -943,6 +952,39 @@ func (b *Buffer) GetFontSlot(slot int) string {
 		return fam
 	}
 	return b.fontSlots[0]
+}
+
+// SetScriptFont maps a script class ("hebrew"/"arabic"/"cjk") to a family for
+// THIS terminal — the face a renderer uses when the primary font can't cover a
+// glyph of that script (see ScriptClass). The class is lower-cased; an empty
+// family clears the mapping (the renderer falls back to its own default).
+func (b *Buffer) SetScriptFont(class, family string) {
+	class = strings.ToLower(strings.TrimSpace(class))
+	if class == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if family == "" {
+		delete(b.scriptFonts, class)
+		return
+	}
+	b.scriptFonts[class] = family
+}
+
+// GetScriptFont returns the family configured for a script class, or "" when
+// none is set (the renderer uses its own fallback for that script).
+func (b *Buffer) GetScriptFont(class string) string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.scriptFonts[strings.ToLower(strings.TrimSpace(class))]
+}
+
+// ClearScriptFonts removes every script-class font mapping.
+func (b *Buffer) ClearScriptFonts() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.scriptFonts = map[string]string{}
 }
 
 // SetForeground sets the current foreground color
