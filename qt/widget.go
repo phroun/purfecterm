@@ -1614,8 +1614,10 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 			cell := w.buffer.GetVisibleCell(x, y)
 
 			// Calculate this cell's visual width
+			// Standard-mode cells carry real widths too, so key on CellWidth
+			// regardless of the FlexWidth flag.
 			cellVisualWidth := 1.0
-			if cell.FlexWidth && cell.CellWidth > 0 {
+			if cell.CellWidth > 0 {
 				cellVisualWidth = cell.CellWidth
 			}
 
@@ -2139,8 +2141,10 @@ func (w *Widget) screenToCell(screenX, screenY int) (cellX, cellY int) {
 		cell := w.buffer.GetVisibleCell(col, cellY)
 
 		// Calculate this cell's visual width
+		// Standard-mode cells carry real widths too, so key on CellWidth
+		// regardless of the FlexWidth flag.
 		cellVisualWidth := 1.0
-		if cell.FlexWidth && cell.CellWidth > 0 {
+		if cell.CellWidth > 0 {
 			cellVisualWidth = cell.CellWidth
 		}
 
@@ -2703,7 +2707,14 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	}
 
 	encodingMode := w.buffer.GetMouseEncodingMode()
-	data := purfecterm.EncodeMouseEvent(button, cellX+1, cellY+1, press, encodingMode)
+	// screenToCell yields a LOGICAL cell index. Under the standard contract
+	// the hosted application addresses in VISUAL columns, so translate; under
+	// flex mode (?2027h) it addresses logical cells, so report as-is.
+	reportX := cellX
+	if !w.buffer.IsFlexWidthModeEnabled() {
+		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
+	}
+	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true

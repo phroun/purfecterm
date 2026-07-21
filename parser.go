@@ -151,7 +151,7 @@ func (p *Parser) handleGround(b byte) {
 	case 0x08: // BS - backspace
 		p.buffer.Backspace()
 	case 0x09: // HT - horizontal tab
-		p.buffer.Tab()
+		p.buffer.TabVisual()
 	case 0x0A: // LF - line feed
 		p.buffer.LineFeed()
 	case 0x0B, 0x0C: // VT, FF - treated as line feed
@@ -353,10 +353,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 		p.buffer.MoveCursorDown(p.getParam(0, 1))
 
 	case 'C': // CUF - Cursor Forward
-		p.buffer.MoveCursorForward(p.getParam(0, 1))
+		p.buffer.MoveCursorForwardVisual(p.getParam(0, 1))
 
 	case 'D': // CUB - Cursor Backward
-		p.buffer.MoveCursorBackward(p.getParam(0, 1))
+		p.buffer.MoveCursorBackwardVisual(p.getParam(0, 1))
 
 	case 'E': // CNL - Cursor Next Line
 		p.buffer.MoveCursorDown(p.getParam(0, 1))
@@ -369,12 +369,12 @@ func (p *Parser) executeCSI(finalByte byte) {
 	case 'G': // CHA - Cursor Horizontal Absolute
 		x := p.getParam(0, 1) - 1 // 1-indexed to 0-indexed
 		_, y := p.buffer.GetCursor()
-		p.buffer.SetCursor(x, y)
+		p.buffer.SetCursorVisual(x, y)
 
 	case 'H', 'f': // CUP/HVP - Cursor Position
 		row := p.getParam(0, 1) - 1
 		col := p.getParam(1, 1) - 1
-		p.buffer.SetCursor(col, row)
+		p.buffer.SetCursorVisual(col, row)
 
 	case 'J': // ED - Erase in Display
 		switch p.getParam(0, 0) {
