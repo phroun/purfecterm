@@ -594,6 +594,12 @@ func (p *Parser) executeSGR() {
 			p.buffer.SetReverse(true)
 		case 9: // Strikethrough
 			p.buffer.SetStrikethrough(true)
+		case 10: // Primary font (font slot 0)
+			p.buffer.SetFont(0)
+		case 11, 12, 13, 14, 15, 16, 17, 18, 19: // Alternate fonts 1..9 (slots 1..9)
+			p.buffer.SetFont(int(param) - 10)
+		case 20: // Fraktur / gothic (font slot 10)
+			p.buffer.SetFont(10)
 		case 21: // Bold off (double underline in some terminals)
 			p.buffer.SetBold(false)
 		case 22: // Normal intensity
@@ -898,6 +904,8 @@ func (p *Parser) executeOSC() {
 		p.executeOSCGlyph(args)
 	case 7002: // Sprite management
 		p.executeOSCSprite(args)
+	case 7004: // Font-slot configuration
+		p.executeOSCFont(args)
 	case 7003: // Screen crop and splits
 		p.executeOSCScreenCrop(args)
 	// Other OSC commands (title, etc.) could be added here
@@ -1261,6 +1269,39 @@ func (p *Parser) executeOSCScreenCrop(args string) {
 			}
 
 			p.buffer.SetScreenSplit(id, screenY, bufRow, bufCol, topFine, leftFine, charWidthScale, lineDensity)
+		}
+	}
+}
+
+// executeOSCFont handles OSC 7004 font-slot commands, configuring the
+// per-terminal slot -> family map an app selects between with SGR 10-20.
+// Format: ESC ] 7004 ; cmd BEL
+// Commands:
+//
+//	f;SLOT;FAMILY  - map font slot SLOT (0..10) to family name FAMILY
+//	fd;SLOT        - clear slot SLOT (it then inherits slot 0)
+//	fda            - clear all slot mappings
+func (p *Parser) executeOSCFont(args string) {
+	parts := strings.SplitN(args, ";", 3)
+	if len(parts) == 0 {
+		return
+	}
+	switch parts[0] {
+	case "fda": // clear all
+		for s := 0; s <= 10; s++ {
+			p.buffer.SetFontSlot(s, "")
+		}
+	case "fd": // clear one
+		if len(parts) >= 2 {
+			if slot, err := strconv.Atoi(parts[1]); err == nil {
+				p.buffer.SetFontSlot(slot, "")
+			}
+		}
+	case "f": // set slot -> family
+		if len(parts) >= 3 {
+			if slot, err := strconv.Atoi(parts[1]); err == nil {
+				p.buffer.SetFontSlot(slot, parts[2])
+			}
 		}
 	}
 }

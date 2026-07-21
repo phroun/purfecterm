@@ -59,6 +59,7 @@ func (r Rect) Intersect(other Rect) Rect {
 type RenderedCell struct {
 	Char      rune
 	Combining string
+	Font      uint8 // Font slot 0..10 (SGR 10..20); a renderer maps it to a family
 	Fg, Bg    purfecterm.Color
 	Bold      bool
 	Italic    bool
@@ -914,6 +915,7 @@ func (t *Terminal) GetCells() [][]RenderedCell {
 
 			cells[y][x] = RenderedCell{
 				Char:      char,
+				Font:      cell.Font,
 				Combining: cell.Combining,
 				Fg:        fg,
 				Bg:        bg,

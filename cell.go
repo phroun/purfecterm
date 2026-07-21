@@ -32,6 +32,7 @@ type Cell struct {
 	BGP            int     // Base Glyph Palette index (-1 = use foreground color code as palette)
 	XFlip          bool    // Horizontal flip for custom glyphs
 	YFlip          bool    // Vertical flip for custom glyphs
+	Font           uint8   // Font slot 0..10: 0 = primary (SGR 10), 1..9 = alternates (SGR 11..19), 10 = fraktur (SGR 20). A renderer maps the slot to a family; unset slots inherit slot 0.
 }
 
 // String returns the full character including any combining marks
