@@ -1655,6 +1655,20 @@ func (w *Widget) renderScreenSplits(cr *cairo.Context, splits []*purfecterm.Scre
 
 			// Draw character
 			if cell.Char != ' ' && cell.Char != 0 {
+				// Arabic contextual joining from the neighbor cells (visual order).
+				var leftCh, rightCh rune
+				if screenCol > 0 {
+					leftCh = w.buffer.GetCellForSplit(screenCol-1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				if screenCol+1 < maxRenderCol {
+					rightCh = w.buffer.GetCellForSplit(screenCol+1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+				if suppress {
+					continue // alef of a lam-alef: ligature lives in the lam's cell
+				}
+				cell.Char = shapedChar
+
 				charStr := cell.String()
 				charFont := w.getFontForCharacter(cell.Char, fontFamily, fontSize)
 
@@ -1806,8 +1820,10 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 			cell := w.buffer.GetVisibleCell(x, y)
 
 			// Calculate this cell's visual width
+			// Standard-mode cells carry real widths too, so key on CellWidth
+			// regardless of the FlexWidth flag.
 			cellVisualWidth := 1.0
-			if cell.FlexWidth && cell.CellWidth > 0 {
+			if cell.CellWidth > 0 {
 				cellVisualWidth = cell.CellWidth
 			}
 
@@ -1894,6 +1910,23 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 				if w.renderCustomGlyph(cr, &cell, cellX, cellY, cellW, cellH, x, blinkPhase, scheme.BlinkMode, lineAttr) {
 					// Custom glyph was rendered, skip normal text rendering
 					goto afterCharRender
+				}
+
+				// Arabic contextual joining from the neighbor cells (visual order:
+				// left = logically next, right = logically previous).
+				{
+					var leftCh, rightCh rune
+					if x > 0 {
+						leftCh = w.buffer.GetVisibleCell(x-1, y).Char
+					}
+					if x+1 < effectiveCols {
+						rightCh = w.buffer.GetVisibleCell(x+1, y).Char
+					}
+					shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+					if suppress {
+						goto afterCharRender // alef of a lam-alef: ligature lives in the lam's cell
+					}
+					cell.Char = shapedChar
 				}
 
 				// Determine which font to use for this character (with fallback for Unicode/CJK)
@@ -2312,8 +2345,10 @@ func (w *Widget) screenToCell(screenX, screenY float64) (cellX, cellY int) {
 		cell := w.buffer.GetVisibleCell(col, cellY)
 
 		// Calculate this cell's visual width
+		// Standard-mode cells carry real widths too, so key on CellWidth
+		// regardless of the FlexWidth flag.
 		cellVisualWidth := 1.0
-		if cell.FlexWidth && cell.CellWidth > 0 {
+		if cell.CellWidth > 0 {
 			cellVisualWidth = cell.CellWidth
 		}
 
@@ -2355,8 +2390,15 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	}
 
 	encodingMode := w.buffer.GetMouseEncodingMode()
+	// screenToCell yields a LOGICAL cell index. Under the standard contract
+	// the hosted application addresses in VISUAL columns, so translate; under
+	// flex mode (?7027h) it addresses logical cells, so report as-is.
+	reportX := cellX
+	if !w.buffer.IsFlexWidthModeEnabled() {
+		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
+	}
 	// Convert to 1-based coordinates
-	data := purfecterm.EncodeMouseEvent(button, cellX+1, cellY+1, press, encodingMode)
+	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true

@@ -151,7 +151,7 @@ func (p *Parser) handleGround(b byte) {
 	case 0x08: // BS - backspace
 		p.buffer.Backspace()
 	case 0x09: // HT - horizontal tab
-		p.buffer.Tab()
+		p.buffer.TabVisual()
 	case 0x0A: // LF - line feed
 		p.buffer.LineFeed()
 	case 0x0B, 0x0C: // VT, FF - treated as line feed
@@ -353,10 +353,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 		p.buffer.MoveCursorDown(p.getParam(0, 1))
 
 	case 'C': // CUF - Cursor Forward
-		p.buffer.MoveCursorForward(p.getParam(0, 1))
+		p.buffer.MoveCursorForwardVisual(p.getParam(0, 1))
 
 	case 'D': // CUB - Cursor Backward
-		p.buffer.MoveCursorBackward(p.getParam(0, 1))
+		p.buffer.MoveCursorBackwardVisual(p.getParam(0, 1))
 
 	case 'E': // CNL - Cursor Next Line
 		p.buffer.MoveCursorDown(p.getParam(0, 1))
@@ -369,12 +369,12 @@ func (p *Parser) executeCSI(finalByte byte) {
 	case 'G': // CHA - Cursor Horizontal Absolute
 		x := p.getParam(0, 1) - 1 // 1-indexed to 0-indexed
 		_, y := p.buffer.GetCursor()
-		p.buffer.SetCursor(x, y)
+		p.buffer.SetCursorVisual(x, y)
 
 	case 'H', 'f': // CUP/HVP - Cursor Position
 		row := p.getParam(0, 1) - 1
 		col := p.getParam(1, 1) - 1
-		p.buffer.SetCursor(col, row)
+		p.buffer.SetCursorVisual(col, row)
 
 	case 'J': // ED - Erase in Display
 		switch p.getParam(0, 0) {
@@ -802,11 +802,17 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			}
 		case 2004: // Bracketed paste mode
 			p.buffer.SetBracketedPasteMode(set)
-		case 2027: // Flexible East Asian Width mode
+		case 2027: // terminal-wg grapheme clustering: accepted, inherently satisfied.
+			// PurfecTerm always clusters combining marks (appendCombiningMark) and
+			// the default STANDARD contract already advances the cursor by visual
+			// column width — exactly what a mode-2027 probe asks for. There is no
+			// state to toggle; report it set under DECRQM when that lands. Flex
+			// mode moved to the private ?7027 to avoid colliding with this.
+		case 7027: // PurfecTerm: Flexible East Asian Width mode (Contract B opt-in)
 			p.buffer.SetFlexWidthMode(set)
-		case 2028: // Visual width-based line wrapping
+		case 7028: // PurfecTerm: Visual width-based line wrapping
 			p.buffer.SetVisualWidthWrap(set)
-		case 2029: // Ambiguous width: narrow (1.0)
+		case 7029: // PurfecTerm: Ambiguous width: narrow (1.0)
 			if set {
 				p.buffer.SetAmbiguousWidthMode(AmbiguousWidthNarrow)
 			} else {
@@ -815,7 +821,7 @@ func (p *Parser) executePrivateModeSet(set bool) {
 					p.buffer.SetAmbiguousWidthMode(AmbiguousWidthAuto)
 				}
 			}
-		case 2030: // Ambiguous width: wide (2.0)
+		case 7030: // PurfecTerm: Ambiguous width: wide (2.0)
 			if set {
 				p.buffer.SetAmbiguousWidthMode(AmbiguousWidthWide)
 			} else {

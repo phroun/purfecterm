@@ -194,20 +194,20 @@ func (b *Buffer) SaveScrollbackANS() string {
 
 	// ========== SECTION 1b: Terminal Mode Settings ==========
 
-	// Flex width mode (?2027) is toggled per-character as needed based on cell.FlexWidth
+	// Flex width mode (?7027) is toggled per-character as needed based on cell.FlexWidth
 	// Start with it off (default state)
 
 	// Output ambiguous width mode setting
 	switch b.ambiguousWidthMode {
 	case AmbiguousWidthNarrow:
-		result.WriteString("\x1b[?2029h") // Enable narrow mode
+		result.WriteString("\x1b[?7029h") // Enable narrow mode
 	case AmbiguousWidthWide:
-		result.WriteString("\x1b[?2030h") // Enable wide mode
+		result.WriteString("\x1b[?7030h") // Enable wide mode
 	}
 
-	// Output visual width wrap mode if enabled (DEC private mode 2028)
+	// Output visual width wrap mode if enabled (PurfecTerm private mode 7028)
 	if b.visualWidthWrap {
-		result.WriteString("\x1b[?2028h")
+		result.WriteString("\x1b[?7028h")
 	}
 
 	// ========== SECTION 2: Content Lines ==========
@@ -343,9 +343,9 @@ func (b *Buffer) SaveScrollbackANS() string {
 			// Toggle flex width mode if needed for this character
 			if cell.FlexWidth != lastFlexWidth {
 				if cell.FlexWidth {
-					result.WriteString("\x1b[?2027h") // Enable flex width
+					result.WriteString("\x1b[?7027h") // Enable flex width
 				} else {
-					result.WriteString("\x1b[?2027l") // Disable flex width
+					result.WriteString("\x1b[?7027l") // Disable flex width
 				}
 				lastFlexWidth = cell.FlexWidth
 			}
@@ -356,9 +356,9 @@ func (b *Buffer) SaveScrollbackANS() string {
 				needsWide := cell.CellWidth >= 2.0
 				if needsWide != lastAmbiguousWide {
 					if needsWide {
-						result.WriteString("\x1b[?2030h") // Ambiguous width: wide
+						result.WriteString("\x1b[?7030h") // Ambiguous width: wide
 					} else {
-						result.WriteString("\x1b[?2029h") // Ambiguous width: narrow
+						result.WriteString("\x1b[?7029h") // Ambiguous width: narrow
 					}
 					lastAmbiguousWide = needsWide
 				}

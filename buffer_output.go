@@ -127,15 +127,16 @@ func (b *Buffer) writeCharInternal(ch rune) {
 			}
 		}
 	} else {
-		charWidth = 1.0
+		charWidth = b.standardCharWidth(ch)
 	}
 
 	// Handle line wrap (DECAWM mode 7)
 	// If visual width wrap is enabled, wrap based on accumulated visual width
 	// Otherwise, wrap based on cell count (traditional behavior)
 	shouldWrap := false
-	if b.visualWidthWrap && b.currentFlexWidth {
-		// Visual width wrap: wrap when adding this char would exceed column limit
+	if (b.visualWidthWrap && b.currentFlexWidth) || !b.currentFlexWidth {
+		// Visual width wrap: standard mode always wraps on accumulated visual
+		// width (the wcwidth contract); flex mode only under ?7028.
 		currentVisualWidth := b.getLineVisualWidth(b.cursorY, b.cursorX)
 		shouldWrap = (currentVisualWidth + charWidth) > float64(effectiveCols)
 	} else {
@@ -271,6 +272,9 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	// Use the calculated charWidth (already accounts for custom glyphs and ambiguous width mode)
 	cell.CellWidth = charWidth
 
+	if !b.currentFlexWidth {
+		b.standardOverwriteFixup(b.cursorY, b.cursorX, charWidth)
+	}
 	b.screen[b.cursorY][b.cursorX] = cell
 	// Only set direction to right if we didn't wrap (wrap already set it to left)
 	if !shouldWrap {
@@ -397,7 +401,12 @@ func (b *Buffer) Backspace() {
 	defer b.mu.Unlock()
 	b.setHorizMoveDir(-1, false) // Moving left
 	if b.cursorX > 0 {
-		b.cursorX--
+		if b.flexWidthMode {
+			b.cursorX--
+		} else {
+			v := b.logicalToVisualLocked(b.cursorY, b.cursorX)
+			b.cursorX = b.visualToLogicalLocked(b.cursorY, v-1)
+		}
 	}
 	b.markDirty()
 }

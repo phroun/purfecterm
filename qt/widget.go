@@ -1467,10 +1467,22 @@ func (w *Widget) renderScreenSplits(painter *qt.QPainter, splits []*purfecterm.S
 
 			// Draw character
 			if cell.Char != ' ' && cell.Char != 0 {
-				fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
-				pen := qt.NewQPen3(fgQColor)
-				painter.SetPenWithPen(pen)
-				painter.DrawText3(cellX, rowPixelY+charHeight*3/4, cell.String())
+				// Arabic contextual joining from the neighbor cells (visual order).
+				var leftCh, rightCh rune
+				if screenCol > 0 {
+					leftCh = w.buffer.GetCellForSplit(screenCol-1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				if screenCol+1 < maxRenderCol {
+					rightCh = w.buffer.GetCellForSplit(screenCol+1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+				if !suppress {
+					cell.Char = shapedChar
+					fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
+					pen := qt.NewQPen3(fgQColor)
+					painter.SetPenWithPen(pen)
+					painter.DrawText3(cellX, rowPixelY+charHeight*3/4, cell.String())
+				}
 			}
 		}
 
@@ -1602,8 +1614,10 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 			cell := w.buffer.GetVisibleCell(x, y)
 
 			// Calculate this cell's visual width
+			// Standard-mode cells carry real widths too, so key on CellWidth
+			// regardless of the FlexWidth flag.
 			cellVisualWidth := 1.0
-			if cell.FlexWidth && cell.CellWidth > 0 {
+			if cell.CellWidth > 0 {
 				cellVisualWidth = cell.CellWidth
 			}
 
@@ -1684,6 +1698,23 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 
 				fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
 				painter.SetPen(fgQColor)
+
+				// Arabic contextual joining from the neighbor cells (visual order:
+				// left = logically next, right = logically previous).
+				{
+					var leftCh, rightCh rune
+					if x > 0 {
+						leftCh = w.buffer.GetVisibleCell(x-1, y).Char
+					}
+					if x+1 < effectiveCols {
+						rightCh = w.buffer.GetVisibleCell(x+1, y).Char
+					}
+					shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+					if suppress {
+						goto afterCharRenderQt // alef of a lam-alef: ligature lives in the lam's cell
+					}
+					cell.Char = shapedChar
+				}
 
 				// Determine which font to use for this character (with fallback for Unicode/CJK)
 				charFontFamily := w.getFontForCharacter(cell.Char, fontFamily, fontSize)
@@ -2110,8 +2141,10 @@ func (w *Widget) screenToCell(screenX, screenY int) (cellX, cellY int) {
 		cell := w.buffer.GetVisibleCell(col, cellY)
 
 		// Calculate this cell's visual width
+		// Standard-mode cells carry real widths too, so key on CellWidth
+		// regardless of the FlexWidth flag.
 		cellVisualWidth := 1.0
-		if cell.FlexWidth && cell.CellWidth > 0 {
+		if cell.CellWidth > 0 {
 			cellVisualWidth = cell.CellWidth
 		}
 
@@ -2674,7 +2707,14 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	}
 
 	encodingMode := w.buffer.GetMouseEncodingMode()
-	data := purfecterm.EncodeMouseEvent(button, cellX+1, cellY+1, press, encodingMode)
+	// screenToCell yields a LOGICAL cell index. Under the standard contract
+	// the hosted application addresses in VISUAL columns, so translate; under
+	// flex mode (?7027h) it addresses logical cells, so report as-is.
+	reportX := cellX
+	if !w.buffer.IsFlexWidthModeEnabled() {
+		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
+	}
+	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true
