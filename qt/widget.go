@@ -1467,10 +1467,22 @@ func (w *Widget) renderScreenSplits(painter *qt.QPainter, splits []*purfecterm.S
 
 			// Draw character
 			if cell.Char != ' ' && cell.Char != 0 {
-				fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
-				pen := qt.NewQPen3(fgQColor)
-				painter.SetPenWithPen(pen)
-				painter.DrawText3(cellX, rowPixelY+charHeight*3/4, cell.String())
+				// Arabic contextual joining from the neighbor cells (visual order).
+				var leftCh, rightCh rune
+				if screenCol > 0 {
+					leftCh = w.buffer.GetCellForSplit(screenCol-1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				if screenCol+1 < maxRenderCol {
+					rightCh = w.buffer.GetCellForSplit(screenCol+1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+				if !suppress {
+					cell.Char = shapedChar
+					fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
+					pen := qt.NewQPen3(fgQColor)
+					painter.SetPenWithPen(pen)
+					painter.DrawText3(cellX, rowPixelY+charHeight*3/4, cell.String())
+				}
 			}
 		}
 
@@ -1684,6 +1696,23 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 
 				fgQColor := qt.NewQColor3(int(fg.R), int(fg.G), int(fg.B))
 				painter.SetPen(fgQColor)
+
+				// Arabic contextual joining from the neighbor cells (visual order:
+				// left = logically next, right = logically previous).
+				{
+					var leftCh, rightCh rune
+					if x > 0 {
+						leftCh = w.buffer.GetVisibleCell(x-1, y).Char
+					}
+					if x+1 < effectiveCols {
+						rightCh = w.buffer.GetVisibleCell(x+1, y).Char
+					}
+					shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+					if suppress {
+						goto afterCharRenderQt // alef of a lam-alef: ligature lives in the lam's cell
+					}
+					cell.Char = shapedChar
+				}
 
 				// Determine which font to use for this character (with fallback for Unicode/CJK)
 				charFontFamily := w.getFontForCharacter(cell.Char, fontFamily, fontSize)

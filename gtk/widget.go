@@ -1655,6 +1655,20 @@ func (w *Widget) renderScreenSplits(cr *cairo.Context, splits []*purfecterm.Scre
 
 			// Draw character
 			if cell.Char != ' ' && cell.Char != 0 {
+				// Arabic contextual joining from the neighbor cells (visual order).
+				var leftCh, rightCh rune
+				if screenCol > 0 {
+					leftCh = w.buffer.GetCellForSplit(screenCol-1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				if screenCol+1 < maxRenderCol {
+					rightCh = w.buffer.GetCellForSplit(screenCol+1+horizOffset, rowInSplit, currentSplit.BufferRow, currentSplit.BufferCol).Char
+				}
+				shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+				if suppress {
+					continue // alef of a lam-alef: ligature lives in the lam's cell
+				}
+				cell.Char = shapedChar
+
 				charStr := cell.String()
 				charFont := w.getFontForCharacter(cell.Char, fontFamily, fontSize)
 
@@ -1894,6 +1908,23 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 				if w.renderCustomGlyph(cr, &cell, cellX, cellY, cellW, cellH, x, blinkPhase, scheme.BlinkMode, lineAttr) {
 					// Custom glyph was rendered, skip normal text rendering
 					goto afterCharRender
+				}
+
+				// Arabic contextual joining from the neighbor cells (visual order:
+				// left = logically next, right = logically previous).
+				{
+					var leftCh, rightCh rune
+					if x > 0 {
+						leftCh = w.buffer.GetVisibleCell(x-1, y).Char
+					}
+					if x+1 < effectiveCols {
+						rightCh = w.buffer.GetVisibleCell(x+1, y).Char
+					}
+					shapedChar, suppress := purfecterm.ShapeArabicCellVisual(leftCh, cell.Char, rightCh)
+					if suppress {
+						goto afterCharRender // alef of a lam-alef: ligature lives in the lam's cell
+					}
+					cell.Char = shapedChar
 				}
 
 				// Determine which font to use for this character (with fallback for Unicode/CJK)
