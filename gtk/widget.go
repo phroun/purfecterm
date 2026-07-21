@@ -747,6 +747,23 @@ func (w *Widget) getFontForCharacter(r rune, mainFont string, fontSize int) stri
 	return mainFont
 }
 
+// cellFontFamily resolves the family a cell paints in from its font slot
+// (SGR 10-20 select the slot, OSC 7004 configures slot -> family): slot 0, and
+// any slot this terminal has not configured, use the primary family; a
+// configured slot names its own family. The result is still the *main* font
+// handed to getFontForCharacter, so per-character CJK/Unicode fallback applies
+// on top. GetFontSlot folds unset slots onto slot 0, so an empty result just
+// means "primary".
+func (w *Widget) cellFontFamily(cell *purfecterm.Cell, primary string) string {
+	if cell.Font == 0 {
+		return primary
+	}
+	if fam := w.buffer.GetFontSlot(int(cell.Font)); fam != "" {
+		return fam
+	}
+	return primary
+}
+
 // resolveFirstAvailableFont parses a comma-separated font list and returns the first available font.
 // Uses Pango/Cairo font map to check font availability. Falls back to "Monospace" if none found.
 func resolveFirstAvailableFont(familyList string) string {
@@ -1670,7 +1687,7 @@ func (w *Widget) renderScreenSplits(cr *cairo.Context, splits []*purfecterm.Scre
 				cell.Char = shapedChar
 
 				charStr := cell.String()
-				charFont := w.getFontForCharacter(cell.Char, fontFamily, fontSize)
+				charFont := w.getFontForCharacter(cell.Char, w.cellFontFamily(&cell, fontFamily), fontSize)
 
 				fgR := float64(fg.R) / 255.0
 				fgG := float64(fg.G) / 255.0
@@ -1929,8 +1946,10 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 					cell.Char = shapedChar
 				}
 
-				// Determine which font to use for this character (with fallback for Unicode/CJK)
-				charFont := w.getFontForCharacter(cell.Char, fontFamily, fontSize)
+				// Determine which font to use for this character: the cell's font
+				// slot picks the primary family (SGR 10-20), then per-character
+				// CJK/Unicode fallback applies on top.
+				charFont := w.getFontForCharacter(cell.Char, w.cellFontFamily(&cell, fontFamily), fontSize)
 
 				// Get character string including any combining marks
 				charStr := cell.String()
