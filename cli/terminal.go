@@ -112,6 +112,21 @@ type Options struct {
 	//   - Calling Render() or RenderToString() to display the terminal
 	Embedded bool
 
+	// ClipboardWrite enables acting on OSC 52 writes and clears -- a program
+	// inside the terminal setting the system clipboard, which is how vim's
+	// "+y, tmux's set-clipboard and every other TUI copy command work. This
+	// is a POINTER so the zero Options keeps the safe default (enabled);
+	// nil means "default", &false disables.
+	ClipboardWrite *bool
+
+	// ClipboardRead enables ANSWERING OSC 52 queries. Off unless set: a read
+	// lets any program that can print to the terminal exfiltrate whatever is
+	// on the clipboard. See purfecterm.ClipboardPolicy.
+	ClipboardRead bool
+
+	// ClipboardLimit caps one OSC 52 payload's decoded size. 0 = 1 MiB.
+	ClipboardLimit int
+
 	// DisableMouseReporting disables xterm-style mouse event reporting to the PTY.
 	// By default (false), mouse events are forwarded to the terminal application
 	// when it requests mouse tracking via escape sequences (e.g., CSI ?1000h).
@@ -224,6 +239,17 @@ func New(opts Options) (*Terminal, error) {
 		hostRows:   hostRows,
 		focused:    !opts.Embedded, // Non-embedded terminals are always focused
 	}
+
+	// OSC 52 policy, and the channel the terminal answers a query on:
+	// responses go where keystrokes go, to the child's input.
+	pol := purfecterm.DefaultClipboardPolicy()
+	if opts.ClipboardWrite != nil {
+		pol.AllowWrite = *opts.ClipboardWrite
+	}
+	pol.AllowRead = opts.ClipboardRead
+	pol.Limit = opts.ClipboardLimit
+	parser.SetClipboardPolicy(pol)
+	parser.SetResponseSink(func(b []byte) { t.SendResponse(b) })
 
 	// Create renderer
 	t.renderer = NewRenderer(t)
@@ -668,6 +694,46 @@ func (t *Terminal) SetOnFocus(fn func(focused bool)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onFocus = fn
+}
+
+// SetOnClipboard registers this front end's clipboard bridge for OSC 52.
+// See purfecterm.Parser.SetOnClipboard for the contract; in short, act on a
+// write or clear, and answer a query by calling reply (or never, to deny).
+//
+// With no callback registered OSC 52 is consumed and dropped.
+func (t *Terminal) SetOnClipboard(fn func(ev purfecterm.ClipboardEvent, reply func([]byte))) {
+	t.parser.SetOnClipboard(fn)
+}
+
+// SetClipboardPolicy replaces the OSC 52 policy set from Options.
+func (t *Terminal) SetClipboardPolicy(pol purfecterm.ClipboardPolicy) {
+	t.parser.SetClipboardPolicy(pol)
+}
+
+// SendResponse delivers the terminal's own answer to the program running
+// inside it -- an OSC 52 query reply today, and DSR/DA once those are
+// implemented. It goes on the same wire as keystrokes, but it is NOT input:
+// it bypasses the focus test and the input callback, because a response is
+// owed to the program whether or not the user is looking at the window, and
+// a host intercepting keystrokes has no business intercepting it.
+func (t *Terminal) SendResponse(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	t.mu.Lock()
+	pty := t.pty
+	cb := t.inputCallback
+	t.mu.Unlock()
+	if pty != nil {
+		pty.Write(data)
+		return
+	}
+	// Embedded: no PTY of our own. The host's input callback is the door the
+	// terminal's keystrokes already leave by; a response leaves by the same
+	// one. Its "consumed" answer is moot here — there is nowhere else to go.
+	if cb != nil {
+		cb(data)
+	}
 }
 
 // SetOnBell sets a callback for when the terminal bell is triggered.

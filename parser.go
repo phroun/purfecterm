@@ -15,6 +15,7 @@ const (
 	stateCSIParam                // Reading CSI parameters
 	stateOSC                     // After ESC ]
 	stateOSCString               // Reading OSC string
+	stateOSCEsc                  // ESC seen inside an OSC string (expecting the \ of ST)
 	stateCharset                 // After ESC ( or ESC )
 	stateDECLineAttr             // After ESC # (waiting for line attribute command)
 )
@@ -42,6 +43,11 @@ type Parser struct {
 	oscCmd int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
 	oscBuf strings.Builder // OSC command arguments
 
+	// OSC 52 clipboard (see clipboard.go)
+	onClipboard     func(ev ClipboardEvent, reply func([]byte))
+	clipboardPolicy ClipboardPolicy
+	responseSink    func([]byte)
+
 	// UTF-8 multi-byte handling
 	utf8Buf  []byte
 	utf8Need int
@@ -53,6 +59,9 @@ func NewParser(buffer *Buffer) *Parser {
 		buffer:    buffer,
 		state:     stateGround,
 		csiParams: make([]int, 0, 16),
+		// Writes act, queries do not. The zero ClipboardPolicy would deny
+		// both, which is not the documented default.
+		clipboardPolicy: DefaultClipboardPolicy(),
 	}
 }
 
@@ -120,6 +129,8 @@ func (p *Parser) processByte(b byte) {
 		p.handleOSC(b)
 	case stateOSCString:
 		p.handleOSCString(b)
+	case stateOSCEsc:
+		p.handleOSCEsc(b)
 	case stateCharset:
 		// Consume one character and return to ground
 		p.state = stateGround
@@ -898,12 +909,32 @@ func (p *Parser) handleOSCString(b byte) {
 		p.state = stateGround
 		return
 	}
-	if b == 0x1B { // ESC might start ST (ESC \)
+	if b == 0x1B {
+		// ESC begins ST (ESC \), so wait for the second byte instead of
+		// ending here. Ending on the ESC left the '\' to be processed from
+		// ground state and PRINTED -- every ST-terminated OSC dropped a
+		// stray backslash on the screen. It went unnoticed because the
+		// 7000-series are BEL-terminated in practice; OSC 52 traffic from
+		// real programs is overwhelmingly ST-terminated.
+		p.state = stateOSCEsc
+		return
+	}
+	p.oscBuf.WriteByte(b)
+}
+
+// handleOSCEsc resolves the byte after an ESC inside an OSC string. '\'
+// completes ST and executes; anything else means the OSC was interrupted, so
+// abandon it and reprocess the byte from the escape state it actually
+// started.
+func (p *Parser) handleOSCEsc(b byte) {
+	if b == '\\' {
 		p.executeOSC()
 		p.state = stateGround
 		return
 	}
-	p.oscBuf.WriteByte(b)
+	p.oscBuf.Reset()
+	p.state = stateEscape
+	p.handleEscape(b)
 }
 
 // executeOSC processes a complete OSC command
@@ -911,6 +942,8 @@ func (p *Parser) executeOSC() {
 	args := p.oscBuf.String()
 
 	switch p.oscCmd {
+	case 52: // Clipboard (OSC 52)
+		p.executeOSCClipboard(args)
 	case 7000: // Palette management
 		p.executeOSCPalette(args)
 	case 7001: // Glyph management
