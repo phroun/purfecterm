@@ -258,8 +258,21 @@ func (p *Parser) handleDECLineAttr(b byte) {
 
 func (p *Parser) handleCSI(b byte) {
 	if p.state == stateCSI {
-		// First byte after ESC [
-		if b == '?' || b == '>' || b == '!' || b == '<' {
+		// First byte after ESC [. The private parameter prefixes are the
+		// whole 0x3C-0x3F range -- '<', '=', '>', '?' -- per ECMA-48. All
+		// four have to be RECOGNIZED even where the sequence itself is not
+		// supported: an unrecognized prefix falls through to the final-byte
+		// branch below, which ends the sequence on the prefix and prints the
+		// parameters that follow as text.
+		//
+		// '=' is the one that bites. A TUI resets the Kitty keyboard protocol
+		// on the way out with CSI = 0 ; 1 u, and a terminal that does not know
+		// '=' is a prefix leaves "0;1u" sitting on the screen as the program
+		// exits.
+		//
+		// '!' (0x21) is an intermediate byte rather than a parameter prefix,
+		// but CSI ! p (DECSTR) carries it in the prefix position, so it stays.
+		if b == '!' || (b >= 0x3C && b <= 0x3F) {
 			p.csiPrivate = b
 			p.state = stateCSIParam
 			return
