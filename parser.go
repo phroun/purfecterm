@@ -1,6 +1,7 @@
 package purfecterm
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -478,6 +479,11 @@ func (p *Parser) executeCSI(finalByte byte) {
 	case 't': // Window manipulation
 		p.executeWindowManipulation()
 
+	case 'p': // DECRQM - Request DEC Private Mode (CSI ? Ps $ p)
+		if p.csiPrivate == '?' && p.csiIntermediate == '$' {
+			p.executeDECRQM()
+		}
+
 	case 'q': // DECSCUSR - Set Cursor Style (with space intermediate)
 		if p.csiIntermediate == ' ' {
 			p.executeDECSCUSR()
@@ -498,6 +504,22 @@ func (p *Parser) executeWindowManipulation() {
 
 	cmd := p.csiParams[0]
 	switch cmd {
+	case 14: // Report text area size in pixels: CSI 4 ; height ; width t
+		if p.responseSink != nil {
+			cw, ch := p.buffer.GetCellPixelSize()
+			cols, rows := p.buffer.GetSize()
+			p.responseSink([]byte(fmt.Sprintf("\x1b[4;%d;%dt", rows*ch, cols*cw)))
+		}
+	case 16: // Report cell size in pixels: CSI 6 ; height ; width t
+		if p.responseSink != nil {
+			cw, ch := p.buffer.GetCellPixelSize()
+			p.responseSink([]byte(fmt.Sprintf("\x1b[6;%d;%dt", ch, cw)))
+		}
+	case 18: // Report text area size in chars: CSI 8 ; rows ; cols t
+		if p.responseSink != nil {
+			cols, rows := p.buffer.GetSize()
+			p.responseSink([]byte(fmt.Sprintf("\x1b[8;%d;%dt", rows, cols)))
+		}
 	case 8: // ESC [ 8 ; rows ; cols t - Set terminal size
 		// Get parameters (0 or omitted means "use physical/current")
 		rows := 0
@@ -534,6 +556,40 @@ func (p *Parser) executeWindowManipulation() {
 	// case 3: Move window
 	// case 4: Resize window in pixels
 	// etc.
+	}
+}
+
+// executeDECRQM answers a DEC Request Mode query (CSI ? Ps $ p) with a report
+// (CSI ? Ps ; status $ y). status: 0 = not recognized, 1 = set, 2 = reset,
+// 3 = permanently set, 4 = permanently reset. Only modes PurfecTerm actually
+// implements report a non-zero status; the set is easily extended.
+func (p *Parser) executeDECRQM() {
+	if p.responseSink == nil || len(p.csiParams) == 0 {
+		return
+	}
+	mode := p.csiParams[0]
+	p.responseSink([]byte(fmt.Sprintf("\x1b[?%d;%d$y", mode, p.decrqmStatus(mode))))
+}
+
+func (p *Parser) decrqmStatus(mode int) int {
+	set := func(b bool) int {
+		if b {
+			return 1
+		}
+		return 2
+	}
+	switch mode {
+	case 1000, 1002, 1003:
+		return set(p.buffer.GetMouseTrackingMode() == mode)
+	case 1006:
+		enc := p.buffer.GetMouseEncodingMode()
+		return set(enc == 1006 || enc == 1016) // ?1016 implies SGR
+	case 1016:
+		return set(p.buffer.GetMouseEncodingMode() == 1016)
+	case 2027:
+		return 3 // permanently set: PurfecTerm always grapheme-clusters
+	default:
+		return 0 // not recognized
 	}
 }
 
@@ -824,11 +880,24 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			} else {
 				p.buffer.SetMouseTrackingMode(0)
 			}
-		case 1006: // SGR Extended Mouse Encoding
+		case 1006: // SGR Extended Mouse Encoding (cell coordinates)
+			// Don't clobber the pixel refinement (?1016) if it is active; a
+			// bare ?1006 reset only clears SGR cells.
 			if set {
-				p.buffer.SetMouseEncodingMode(1006)
-			} else {
+				if p.buffer.GetMouseEncodingMode() != 1016 {
+					p.buffer.SetMouseEncodingMode(1006)
+				}
+			} else if p.buffer.GetMouseEncodingMode() == 1006 {
 				p.buffer.SetMouseEncodingMode(0)
+			}
+		case 1016: // SGR-Pixels Mouse Encoding (coordinates in pixels)
+			// A refinement of ?1006: same wire format, pixel coordinates.
+			// Resetting it falls back to SGR cells (?1006 semantics), the sane
+			// default since a program that asked for pixels wanted SGR at least.
+			if set {
+				p.buffer.SetMouseEncodingMode(1016)
+			} else if p.buffer.GetMouseEncodingMode() == 1016 {
+				p.buffer.SetMouseEncodingMode(1006)
 			}
 		case 2004: // Bracketed paste mode
 			p.buffer.SetBracketedPasteMode(set)

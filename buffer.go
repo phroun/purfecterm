@@ -121,7 +121,14 @@ type Buffer struct {
 
 	// Mouse tracking modes (set via DEC Private Mode sequences)
 	mouseTrackingMode  int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
-	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended
+	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
+
+	// Cell size in device pixels, reported to a hosted app via CSI 16 t and used
+	// as the unit for SGR-Pixels (?1016) mouse reports. 0 = unknown: a headless
+	// buffer has no inherent pixel size, so a renderer that wants pixel geometry
+	// pushes its cell size here (SetCellPixelSize).
+	cellPixelWidth  int
+	cellPixelHeight int
 
 	currentFg        Color
 	currentBg            Color
@@ -798,6 +805,25 @@ func (b *Buffer) GetMouseEncodingMode() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.mouseEncodingMode
+}
+
+// SetCellPixelSize records the terminal's cell size in device pixels. A
+// headless buffer has no inherent pixel size; a renderer that knows its cell
+// geometry sets it here so the terminal can answer CSI 16 t and so SGR-Pixels
+// (?1016) mouse reports carry meaningful pixel coordinates. Zero leaves the
+// size unknown.
+func (b *Buffer) SetCellPixelSize(width, height int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cellPixelWidth = width
+	b.cellPixelHeight = height
+}
+
+// GetCellPixelSize returns the cell size in device pixels (0,0 when unset).
+func (b *Buffer) GetCellPixelSize() (width, height int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.cellPixelWidth, b.cellPixelHeight
 }
 
 // SetFlexWidthMode enables or disables flexible East Asian Width mode
