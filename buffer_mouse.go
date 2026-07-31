@@ -29,12 +29,16 @@ const (
 //   - button: button value (MouseButton* constants, with modifier flags ORed in)
 //   - x, y: 1-based cell coordinates
 //   - press: true for press/motion, false for release
-//   - encodingMode: 0 for X10, 1006 for SGR
+//   - encodingMode: 0 for X10, 1006 for SGR (cells), 1016 for SGR-Pixels
+//     (identical wire format; x,y are pixels rather than cells — the caller
+//     supplies pixel coordinates when the buffer is in 1016)
 //
 // Returns the escape sequence bytes, or nil if the event cannot be encoded.
 func EncodeMouseEvent(button, x, y int, press bool, encodingMode int) []byte {
 	switch encodingMode {
-	case 1006: // SGR extended encoding: ESC [ < button ; x ; y M/m
+	case 1006, 1016: // SGR encoding: ESC [ < button ; x ; y M/m. 1006 = cells,
+		// 1016 = SGR-Pixels (same bytes; x,y are pixels). PurfecTerm is agnostic
+		// to the coordinate space — the caller decides what x,y mean per mode.
 		suffix := byte('M') // press
 		if !press {
 			suffix = byte('m') // release
