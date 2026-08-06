@@ -204,17 +204,30 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					// Trim the current line (keep the boundary char)
 					b.screen[b.cursorY-1] = line[:wrapPoint+1]
 
-					// Place indent + moved cells at the start of the new line
+					// Place indent + moved cells at the START of the wrap
+					// target, OVERWRITING its leading cells rather than
+					// prepending to whatever is already there. The target is a
+					// real grid row an application may already have painted via
+					// absolute cursor positioning; an unconditional prepend grew
+					// the row by the indent on every wrap and nothing ever
+					// truncated the surplus, so a full-screen app that re-wraps
+					// each frame drove the line width — and memory — without
+					// bound. When the target is empty (the intended reflow case,
+					// e.g. a program that emits a long unwrapped line) the
+					// leading cells become exactly indent+moved either way, so
+					// behaviour there is unchanged.
 					newLine := append(indentCells, cellsToMove...)
-					b.screen[b.cursorY] = append(newLine, b.screen[b.cursorY]...)
+					b.overwriteLineStart(b.cursorY, newLine)
 
 					// Position cursor after the indent and moved cells
 					b.cursorX = leadingSpaces + len(cellsToMove)
 				} else {
 					// No valid word boundary (single word or no break after indent)
-					// Just wrap with indent, no cells moved
+					// Just wrap with indent, no cells moved - overwrite the
+					// leading indent cells in place (see above; an unconditional
+					// prepend grew the row without bound).
 					if leadingSpaces > 0 {
-						b.screen[b.cursorY] = append(indentCells, b.screen[b.cursorY]...)
+						b.overwriteLineStart(b.cursorY, indentCells)
 					}
 					b.cursorX = leadingSpaces
 				}
@@ -741,4 +754,22 @@ func (b *Buffer) EraseChars(n int) {
 		line[i] = fillCell
 	}
 	b.markDirty()
+}
+
+// overwriteLineStart writes cells into the START of the given row, extending the
+// row only when it is shorter than cells and never beyond len(cells). Smart word
+// wrap uses it to place indent (and any moved word) at the head of the wrap
+// target: overwriting in place cannot grow a grid row without bound, whereas the
+// prepend it replaced grew the row by the indent on every wrap when the target
+// was already painted.
+func (b *Buffer) overwriteLineStart(row int, cells []Cell) {
+	if row < 0 || row >= len(b.screen) {
+		return
+	}
+	line := b.screen[row]
+	for len(line) < len(cells) {
+		line = append(line, EmptyCell())
+	}
+	copy(line, cells)
+	b.screen[row] = line
 }
