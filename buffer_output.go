@@ -765,6 +765,10 @@ func (b *Buffer) DeleteChars(n int) {
 	if b.cursorY >= len(b.screen) {
 		return
 	}
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnDeleteChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
+	}
 	line := b.screen[b.cursorY]
 	lineLen := len(line)
 
@@ -790,6 +794,10 @@ func (b *Buffer) InsertChars(n int) {
 
 	if b.cursorY >= len(b.screen) {
 		return
+	}
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnInsertChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
 	}
 
 	// Ensure line is long enough
@@ -824,6 +832,10 @@ func (b *Buffer) EraseChars(n int) {
 
 	if b.cursorY >= len(b.screen) {
 		return
+	}
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnEraseChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
 	}
 
 	line := b.screen[b.cursorY]

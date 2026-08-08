@@ -113,6 +113,12 @@ type CaptureObserver interface {
 	OnClearLine(y int, sgr string)             // EL2: the whole line y
 	OnClearEndOfScreen(x, y int, sgr string)   // ED0: (x,y) to end of screen
 	OnClearBeginOfScreen(x, y int, sgr string) // ED1: screen start through (x,y)
+
+	// The in-line character ops a curses app uses for horizontal shifts and
+	// editing. sgr is the current pen whose background fills the blanks.
+	OnDeleteChars(x, y, n int, sgr string) // DCH: delete n cells at (x,y), shifting left
+	OnInsertChars(x, y, n int, sgr string) // ICH: insert n blank cells at (x,y), shifting right
+	OnEraseChars(x, y, n int, sgr string)  // ECH: blank n cells at (x,y) in place
 }
 
 // NopCaptureObserver is a CaptureObserver that ignores every event. Embed it to
@@ -134,6 +140,9 @@ func (NopCaptureObserver) OnClearBeginOfLine(int, int, string)   {}
 func (NopCaptureObserver) OnClearLine(int, string)               {}
 func (NopCaptureObserver) OnClearEndOfScreen(int, int, string)   {}
 func (NopCaptureObserver) OnClearBeginOfScreen(int, int, string) {}
+func (NopCaptureObserver) OnDeleteChars(int, int, int, string)   {}
+func (NopCaptureObserver) OnInsertChars(int, int, int, string)   {}
+func (NopCaptureObserver) OnEraseChars(int, int, int, string)    {}
 
 // SetCaptureObserver registers (or clears, with nil) the observer that receives
 // this terminal's capture events. See CaptureObserver. It lives on the buffer —
