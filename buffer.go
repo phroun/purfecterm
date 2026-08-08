@@ -747,6 +747,25 @@ func (b *Buffer) GetSize() (cols, rows int) {
 	return b.cols, b.rows
 }
 
+// GetEffectiveSize returns the effective terminal dimensions in character
+// cells: the logical size when one has been set via CSI 8 t, and the physical
+// size otherwise. This is the lock-safe counterpart to EffectiveCols/
+// EffectiveRows (which assume the caller holds the lock) and is what the
+// XTWINOPS text-area reports (CSI 14 t / CSI 18 t) answer, so an application
+// reads back the same grid it writes into.
+func (b *Buffer) GetEffectiveSize() (cols, rows int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	cols, rows = b.cols, b.rows
+	if b.logicalCols > 0 {
+		cols = b.logicalCols
+	}
+	if b.logicalRows > 0 {
+		rows = b.logicalRows
+	}
+	return cols, rows
+}
+
 
 
 

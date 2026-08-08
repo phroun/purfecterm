@@ -507,7 +507,7 @@ func (p *Parser) executeWindowManipulation() {
 	case 14: // Report text area size in pixels: CSI 4 ; height ; width t
 		if p.responseSink != nil {
 			cw, ch := p.buffer.GetCellPixelSize()
-			cols, rows := p.buffer.GetSize()
+			cols, rows := p.buffer.GetEffectiveSize()
 			p.responseSink([]byte(fmt.Sprintf("\x1b[4;%d;%dt", rows*ch, cols*cw)))
 		}
 	case 16: // Report cell size in pixels: CSI 6 ; height ; width t
@@ -517,7 +517,7 @@ func (p *Parser) executeWindowManipulation() {
 		}
 	case 18: // Report text area size in chars: CSI 8 ; rows ; cols t
 		if p.responseSink != nil {
-			cols, rows := p.buffer.GetSize()
+			cols, rows := p.buffer.GetEffectiveSize()
 			p.responseSink([]byte(fmt.Sprintf("\x1b[8;%d;%dt", rows, cols)))
 		}
 	case 8: // ESC [ 8 ; rows ; cols t - Set terminal size
