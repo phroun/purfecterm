@@ -578,7 +578,7 @@ func (b *Buffer) ClearToEndOfLine() {
 		// Erase from the cursor to the right margin, filling with the current
 		// pen's background (background-colour erase). The observer clears its
 		// row's tail and paints it in this pen.
-		b.captureObserver.OnClearToEndOfLine(b.cursorX, b.cursorY, b.currentPenSGR())
+		b.captureObserver.OnClearEndOfLine(b.cursorX, b.cursorY, b.currentPenSGR())
 	}
 
 	// Update line info with current attributes (for rendering beyond stored content)
@@ -603,6 +603,11 @@ func (b *Buffer) ClearToStartOfLine() {
 
 	if b.cursorY >= len(b.screen) {
 		return
+	}
+
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnClearBeginOfLine(b.cursorX, b.cursorY, b.currentPenSGR())
 	}
 
 	line := b.screen[b.cursorY]
@@ -631,6 +636,11 @@ func (b *Buffer) ClearLine() {
 		return
 	}
 
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnClearLine(b.cursorY, b.currentPenSGR())
+	}
+
 	// Update line info with current attributes
 	if b.cursorY < len(b.lineInfos) {
 		b.lineInfos[b.cursorY].DefaultCell = b.currentDefaultCell()
@@ -646,6 +656,11 @@ func (b *Buffer) ClearLine() {
 func (b *Buffer) ClearToEndOfScreen() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnClearEndOfScreen(b.cursorX, b.cursorY, b.currentPenSGR())
+	}
 
 	// Update screen info with current attributes
 	b.updateScreenInfo()
@@ -676,6 +691,11 @@ func (b *Buffer) ClearToEndOfScreen() {
 func (b *Buffer) ClearToStartOfScreen() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnClearBeginOfScreen(b.cursorX, b.cursorY, b.currentPenSGR())
+	}
 
 	// Clear all lines above cursor
 	for y := 0; y < b.cursorY && y < len(b.screen); y++ {
