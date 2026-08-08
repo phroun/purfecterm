@@ -54,10 +54,16 @@ func (b *Buffer) setCursorInternal(x, y int) {
 		y = effectiveRows - 1
 	}
 
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.trackCursorYMove(y)
 	b.setHorizMoveDir(0, true) // Absolute positioning - direction unknown
 	b.cursorX = x
 	b.cursorY = y
+	if b.liveEnabled() {
+		b.captureObserver.OnCursorMove(b.cursorX, b.cursorY)
+	}
 	b.markDirty()
 }
 
