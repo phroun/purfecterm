@@ -89,31 +89,79 @@ func (b *Buffer) Reset() {
 	}
 }
 
-// SaveScrollbackText returns the scrollback and screen content as plain text
+// ScrollbackSaveOptions tunes how SaveScrollbackText/SaveScrollbackANS serialize
+// a buffer. The zero value reproduces the historical behavior, so the plain
+// SaveScrollback* entry points stay unchanged; callers wanting a variant pass
+// this to the *Opts forms. It is the place to add further capture knobs.
+type ScrollbackSaveOptions struct {
+	// TrimTrailingBlankLines stops the CONTENT lines at the last used line
+	// instead of dumping the empty tail of the fixed-height screen grid. "Used"
+	// is the buffer's own notion: a written line has cells, an untouched or
+	// cleared one is zero-length (see makeEmptyLine / ClearScreen). The ANS
+	// form still writes its full reload payload — palette/glyph headers and the
+	// end-state footer (splits, sprites, crop, cursor) — so a trimmed stream
+	// remains a faithful, reloadable session, just without the blank tail.
+	TrimTrailingBlankLines bool
+}
+
+// usedLineCount returns how many leading lines of the combined scrollback+screen
+// sequence to serialize so the empty tail of the screen grid is omitted: one
+// past the last line that has any cells, or 0 when there is no content at all.
+func usedLineCount(scrollback, screen [][]Cell) int {
+	for i := len(screen) - 1; i >= 0; i-- {
+		if len(screen[i]) > 0 {
+			return len(scrollback) + i + 1
+		}
+	}
+	for i := len(scrollback) - 1; i >= 0; i-- {
+		if len(scrollback[i]) > 0 {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// SaveScrollbackText returns the scrollback and screen content as plain text.
 func (b *Buffer) SaveScrollbackText() string {
+	return b.SaveScrollbackTextOpts(ScrollbackSaveOptions{})
+}
+
+// SaveScrollbackTextOpts is SaveScrollbackText with serialization options.
+func (b *Buffer) SaveScrollbackTextOpts(o ScrollbackSaveOptions) string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	var result strings.Builder
-
-	// Output scrollback lines
-	for _, line := range b.scrollback {
-		for _, cell := range line {
-			if cell.Char != 0 {
-				result.WriteRune(cell.Char)
-			}
-		}
-		result.WriteString("\n")
+	limit := len(b.scrollback) + len(b.screen)
+	if o.TrimTrailingBlankLines {
+		limit = usedLineCount(b.scrollback, b.screen)
 	}
 
-	// Output screen lines
-	for _, line := range b.screen {
+	var result strings.Builder
+	emitted := 0
+	writeLine := func(line []Cell) bool {
+		if emitted >= limit {
+			return false
+		}
 		for _, cell := range line {
 			if cell.Char != 0 {
 				result.WriteRune(cell.Char)
 			}
 		}
 		result.WriteString("\n")
+		emitted++
+		return true
+	}
+
+	// Output scrollback lines, then screen lines
+	for _, line := range b.scrollback {
+		if !writeLine(line) {
+			break
+		}
+	}
+	for _, line := range b.screen {
+		if !writeLine(line) {
+			break
+		}
 	}
 
 	return result.String()
@@ -126,6 +174,11 @@ func (b *Buffer) SaveScrollbackText() string {
 // 3. END: Sprite units, screen splits, screen crop, crop rectangles, sprites, cursor position
 // Callers may prepend a header comment using OSC 9999 before this output.
 func (b *Buffer) SaveScrollbackANS() string {
+	return b.SaveScrollbackANSOpts(ScrollbackSaveOptions{})
+}
+
+// SaveScrollbackANSOpts is SaveScrollbackANS with serialization options.
+func (b *Buffer) SaveScrollbackANSOpts(o ScrollbackSaveOptions) string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -229,6 +282,14 @@ func (b *Buffer) SaveScrollbackANS() string {
 	// Count total lines for cursor positioning later
 	totalLines := len(b.scrollback) + len(b.screen)
 	currentLineNum := 0
+
+	// limit is how many content lines to emit: the whole grid, or (when trimming)
+	// one past the last used line so the blank tail is omitted. currentLineNum,
+	// which outputLine advances, is the running count checked against it.
+	limit := totalLines
+	if o.TrimTrailingBlankLines {
+		limit = usedLineCount(b.scrollback, b.screen)
+	}
 
 	outputLine := func(line []Cell, lineInfo LineInfo) {
 		hasNonDefaultBg := false
@@ -393,8 +454,11 @@ func (b *Buffer) SaveScrollbackANS() string {
 		}
 	}
 
-	// Output scrollback lines
+	// Output scrollback lines, then screen lines, stopping at the content limit.
 	for i, line := range b.scrollback {
+		if currentLineNum >= limit {
+			break
+		}
 		var lineInfo LineInfo
 		if i < len(b.scrollbackInfo) {
 			lineInfo = b.scrollbackInfo[i]
@@ -402,8 +466,10 @@ func (b *Buffer) SaveScrollbackANS() string {
 		outputLine(line, lineInfo)
 	}
 
-	// Output screen lines
 	for i, line := range b.screen {
+		if currentLineNum >= limit {
+			break
+		}
 		var lineInfo LineInfo
 		if i < len(b.lineInfos) {
 			lineInfo = b.lineInfos[i]
@@ -508,8 +574,17 @@ func (b *Buffer) SaveScrollbackANS() string {
 	// The cursor is considered "at end" if it's on the last line at or past the content
 	// In that case, we don't need CSI A or G codes
 	if totalLines > 0 {
-		// Calculate how far back the cursor needs to go
+		// Calculate how far back the cursor needs to go. When the blank tail was
+		// trimmed, the last line OUTPUT is `limit`, not the full grid bottom, so
+		// the move-up is measured from there: an ESC[10A over 5 trimmed blank
+		// lines becomes ESC[5A. Clamp at zero for a cursor that sat in the tail.
 		linesFromEnd := totalLines - (len(b.scrollback) + b.cursorY + 1)
+		if o.TrimTrailingBlankLines {
+			linesFromEnd = limit - (len(b.scrollback) + b.cursorY + 1)
+			if linesFromEnd < 0 {
+				linesFromEnd = 0
+			}
+		}
 
 		// Find the last non-empty character position on the last line
 		lastLineLen := 0

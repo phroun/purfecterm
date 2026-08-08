@@ -651,9 +651,19 @@ func (t *Terminal) SaveScrollbackText() string {
 	return t.buffer.SaveScrollbackText()
 }
 
+// SaveScrollbackTextOpts is SaveScrollbackText with serialization options.
+func (t *Terminal) SaveScrollbackTextOpts(o purfecterm.ScrollbackSaveOptions) string {
+	return t.buffer.SaveScrollbackTextOpts(o)
+}
+
 // SaveScrollbackANS returns the scrollback with ANSI codes preserved
 func (t *Terminal) SaveScrollbackANS() string {
 	return t.buffer.SaveScrollbackANS()
+}
+
+// SaveScrollbackANSOpts is SaveScrollbackANS with serialization options.
+func (t *Terminal) SaveScrollbackANSOpts(o purfecterm.ScrollbackSaveOptions) string {
+	return t.buffer.SaveScrollbackANSOpts(o)
 }
 
 // SetColorScheme sets the terminal color scheme
