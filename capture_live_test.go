@@ -53,6 +53,15 @@ func (o *liveObserver) OnClearEndOfScreen(x, y int, sgr string) {
 func (o *liveObserver) OnClearBeginOfScreen(x, y int, sgr string) {
 	o.events = append(o.events, liveEvent{kind: "bos", x: x, y: y, text: sgr})
 }
+func (o *liveObserver) OnDeleteChars(x, y, n int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "dch", x: x, y: y, n: n, text: sgr})
+}
+func (o *liveObserver) OnInsertChars(x, y, n int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "ich", x: x, y: y, n: n, text: sgr})
+}
+func (o *liveObserver) OnEraseChars(x, y, n int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "ech", x: x, y: y, n: n, text: sgr})
+}
 
 func (o *liveObserver) kinds() []string {
 	ks := make([]string, len(o.events))
@@ -311,6 +320,38 @@ func TestCaptureLiveEraseFamily(t *testing.T) {
 			}
 			if !containsSub(ev.text, c.bg) {
 				t.Errorf("%s pen = %q, want bg %s", c.kind, ev.text, c.bg)
+			}
+		})
+	}
+}
+
+// The in-line character ops each fire their own event with the cursor, count,
+// and current pen: DCH delete, ICH insert, ECH erase.
+func TestCaptureLiveCharOps(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		kind string
+	}{
+		{"delete (DCH)", "abcdef\x1b[3G\x1b[2P", "dch"},
+		{"insert (ICH)", "abcdef\x1b[3G\x1b[2@", "ich"},
+		{"erase (ECH)", "abcdef\x1b[3G\x1b[2X", "ech"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, p, obs := newLiveTerm(20, 3)
+			p.Parse([]byte(c.seq)) // write, cursor to col 3, op with count 2
+			var ev *liveEvent
+			for i := range obs.events {
+				if obs.events[i].kind == c.kind {
+					ev = &obs.events[i]
+				}
+			}
+			if ev == nil {
+				t.Fatalf("no %s event; kinds=%v", c.kind, obs.kinds())
+			}
+			if ev.x != 2 || ev.n != 2 {
+				t.Errorf("%s = x%d n%d, want x2 n2", c.kind, ev.x, ev.n)
 			}
 		})
 	}
