@@ -199,6 +199,10 @@ type Buffer struct {
 	onScaleChange func()     // Called when screen scaling modes change
 	onThemeChange func(bool) // Called when theme changes (arg: isDark)
 
+	// captureObserver receives output-capture events (OnOutput from the parser,
+	// OnLineOff from this buffer); nil (the default) means none, at no cost.
+	captureObserver CaptureObserver
+
 	// Theme state (DECSCNM - Screen Mode)
 	darkTheme          bool // Current theme: true=dark, false=light
 	preferredDarkTheme bool // User's preferred theme from config (restored on reset)
@@ -594,6 +598,15 @@ func (b *Buffer) adjustScreenToRows(targetRows int) {
 
 // pushLineToScrollback adds a line to the scrollback buffer
 func (b *Buffer) pushLineToScrollback(line []Cell, info LineInfo) {
+	// A line moving off the screen is one line of the ordered transcript: report
+	// it to a capture observer (the `lines` rung) before it is capped away. This
+	// is the single chokepoint for every off-screen path — scroll, shrink, and
+	// the scrollback-preserving clear/reset — so the transcript is complete even
+	// past the scrollback cap.
+	if b.captureObserver != nil {
+		b.captureObserver.OnLineOff(line, info)
+	}
+
 	// Skip if scrollback is disabled (lines are discarded instead)
 	if b.scrollbackDisabled {
 		return
@@ -766,6 +779,41 @@ func (b *Buffer) GetEffectiveSize() (cols, rows int) {
 	return cols, rows
 }
 
+// SetCaptureObserver registers (or clears, with nil) this buffer's capture
+// observer. See CaptureObserver. Parser.SetCaptureObserver and
+// cli.Terminal.SetCaptureObserver delegate here.
+func (b *Buffer) SetCaptureObserver(o CaptureObserver) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.captureObserver = o
+}
+
+// EmitRemainingScreenLines reports the current on-screen lines to the capture
+// observer as OnLineOff events, up to the last used line (the blank tail is
+// omitted). A `lines` consumer calls this once at session end so the final
+// screen — content that never scrolled off — completes the ordered transcript.
+// No-op when no observer is set.
+func (b *Buffer) EmitRemainingScreenLines() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.captureObserver == nil {
+		return
+	}
+	last := -1
+	for i := len(b.screen) - 1; i >= 0; i-- {
+		if len(b.screen[i]) > 0 {
+			last = i
+			break
+		}
+	}
+	for i := 0; i <= last; i++ {
+		var info LineInfo
+		if i < len(b.lineInfos) {
+			info = b.lineInfos[i]
+		}
+		b.captureObserver.OnLineOff(b.screen[i], info)
+	}
+}
 
 
 

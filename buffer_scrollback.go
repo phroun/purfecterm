@@ -121,6 +121,88 @@ func usedLineCount(scrollback, screen [][]Cell) int {
 	return 0
 }
 
+// SerializeLineANS renders one line's cells to a self-contained ANSI string —
+// the form the `lines` capture rung emits, one line of the ordered transcript.
+// It applies the DEC line attribute, resets styling at the start of each run and
+// at the end so the line stands alone, and writes standard SGR (colour, bold,
+// italic, underline, reverse, blink, strikethrough) as it changes across the
+// line. purfecterm's private glyph/flip/flex extensions are not emitted — the
+// transcript targets line-oriented output where they do not appear — and a
+// consumer wanting plain text simply strips the SGR. No trailing newline; the
+// caller separates lines.
+func SerializeLineANS(line []Cell, info LineInfo) string {
+	var b strings.Builder
+	switch info.Attribute {
+	case LineAttrDoubleWidth:
+		b.WriteString("\x1b#6")
+	case LineAttrDoubleTop:
+		b.WriteString("\x1b#3")
+	case LineAttrDoubleBottom:
+		b.WriteString("\x1b#4")
+	}
+
+	// Track state against the real defaults so a default cell emits nothing and a
+	// wholly plain line serializes to just its text.
+	fg, bg := DefaultForeground, DefaultBackground
+	var bold, italic, underline, reverse, blink, strike bool
+	for _, cell := range line {
+		// SGR has no per-attribute "off" we track, so when any tracked attribute
+		// changes reset all and re-assert — the same scheme SaveScrollbackANS uses.
+		if bold != cell.Bold || italic != cell.Italic || underline != cell.Underline ||
+			reverse != cell.Reverse || blink != cell.Blink || strike != cell.Strikethrough ||
+			fg != cell.Foreground || bg != cell.Background {
+			b.WriteString("\x1b[0m")
+			fg, bg = DefaultForeground, DefaultBackground
+			bold, italic, underline, reverse, blink, strike = false, false, false, false, false, false
+		}
+		if cell.Bold && !bold {
+			b.WriteString("\x1b[1m")
+			bold = true
+		}
+		if cell.Italic && !italic {
+			b.WriteString("\x1b[3m")
+			italic = true
+		}
+		if cell.Underline && !underline {
+			b.WriteString("\x1b[4m")
+			underline = true
+		}
+		if cell.Reverse && !reverse {
+			b.WriteString("\x1b[7m")
+			reverse = true
+		}
+		if cell.Blink && !blink {
+			b.WriteString("\x1b[5m")
+			blink = true
+		}
+		if cell.Strikethrough && !strike {
+			b.WriteString("\x1b[9m")
+			strike = true
+		}
+		if cell.Foreground != fg {
+			b.WriteString("\x1b[" + cell.Foreground.ToSGRCode(true) + "m")
+			fg = cell.Foreground
+		}
+		if cell.Background != bg {
+			b.WriteString("\x1b[" + cell.Background.ToSGRCode(false) + "m")
+			bg = cell.Background
+		}
+		if cell.Char != 0 {
+			b.WriteRune(cell.Char)
+			if len(cell.Combining) > 0 {
+				b.WriteString(cell.Combining)
+			}
+		}
+	}
+	// Close the line only if it ended in a non-default state, so a plain line
+	// carries no trailing reset.
+	if bold || italic || underline || reverse || blink || strike ||
+		fg != DefaultForeground || bg != DefaultBackground {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
+}
+
 // SaveScrollbackText returns the scrollback and screen content as plain text.
 func (b *Buffer) SaveScrollbackText() string {
 	return b.SaveScrollbackTextOpts(ScrollbackSaveOptions{})

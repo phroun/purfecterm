@@ -726,6 +726,13 @@ func (t *Terminal) SetCaptureObserver(o purfecterm.CaptureObserver) {
 	t.parser.SetCaptureObserver(o)
 }
 
+// EmitRemainingCaptureLines reports the current on-screen lines to the capture
+// observer as OnLineOff events — the `lines` rung's end-of-session flush of the
+// content that never scrolled off. See purfecterm.Buffer.EmitRemainingScreenLines.
+func (t *Terminal) EmitRemainingCaptureLines() {
+	t.buffer.EmitRemainingScreenLines()
+}
+
 // SendResponse delivers the terminal's own answer to the program running
 // inside it -- an OSC 52 query reply today, and DSR/DA once those are
 // implemented. It goes on the same wire as keystrokes, but it is NOT input:
