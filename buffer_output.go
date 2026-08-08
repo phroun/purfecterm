@@ -538,7 +538,10 @@ func (b *Buffer) ClearScreen() {
 	defer b.mu.Unlock()
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
-		b.captureObserver.OnClearScreen()
+		// The pen active at the clear is the screen's background: ED fills with
+		// the current SGR (background-colour erase), so every blank cell sits on
+		// this colour. The observer keeps it to paint default cells.
+		b.captureObserver.OnClearScreen(b.currentPenSGR())
 	}
 	b.updateScreenInfo() // Update screen default attributes
 	b.initScreen()
@@ -568,6 +571,14 @@ func (b *Buffer) ClearToEndOfLine() {
 
 	if b.cursorY >= len(b.screen) {
 		return
+	}
+
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		// Erase from the cursor to the right margin, filling with the current
+		// pen's background (background-colour erase). The observer clears its
+		// row's tail and paints it in this pen.
+		b.captureObserver.OnClearToEndOfLine(b.cursorX, b.cursorY, b.currentPenSGR())
 	}
 
 	// Update line info with current attributes (for rendering beyond stored content)
