@@ -49,6 +49,10 @@ type Parser struct {
 	clipboardPolicy ClipboardPolicy
 	responseSink    func([]byte)
 
+	// captureObserver receives output-capture events; nil (the default) means
+	// none, at no cost. See CaptureObserver.
+	captureObserver CaptureObserver
+
 	// UTF-8 multi-byte handling
 	utf8Buf  []byte
 	utf8Need int
@@ -66,8 +70,43 @@ func NewParser(buffer *Buffer) *Parser {
 	}
 }
 
+// CaptureObserver receives a terminal's output as events, for a host that wants
+// to mirror or log it beyond what the screen buffer keeps. Registered on a
+// Parser with SetCaptureObserver; nil means no events and no cost. Calls happen
+// on the goroutine that feeds the parser, in feed order.
+//
+// Only OnOutput exists today — the raw byte tee. Line-scrolled-off and
+// live-screen events join this interface as those capture rungs are built; an
+// implementer that wants only some of them should embed NopCaptureObserver so
+// later additions do not break it.
+type CaptureObserver interface {
+	// OnOutput reports a chunk of input exactly as the parser received it,
+	// before parsing — the literal bytes, in the same chunks they were fed. The
+	// slice is valid only for the duration of the call; copy it to retain.
+	OnOutput(data []byte)
+}
+
+// NopCaptureObserver is a CaptureObserver that ignores every event. Embed it to
+// implement only the events you care about and stay forward-compatible as the
+// interface grows.
+type NopCaptureObserver struct{}
+
+func (NopCaptureObserver) OnOutput([]byte) {}
+
+// SetCaptureObserver registers (or clears, with nil) the observer that receives
+// this parser's capture events. See CaptureObserver.
+func (p *Parser) SetCaptureObserver(o CaptureObserver) {
+	p.captureObserver = o
+}
+
 // Parse processes input data and updates the terminal buffer
 func (p *Parser) Parse(data []byte) {
+	// The raw tee: the literal bytes as received, before parsing. This is the
+	// `raw` capture rung, and it fires for every consumer of the parser (the
+	// standalone CLI's read loop, an embedded host) alike.
+	if p.captureObserver != nil {
+		p.captureObserver.OnOutput(data)
+	}
 	for _, b := range data {
 		p.processByte(b)
 	}
