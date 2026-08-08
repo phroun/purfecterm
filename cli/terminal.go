@@ -720,6 +720,12 @@ func (t *Terminal) SetClipboardPolicy(pol purfecterm.ClipboardPolicy) {
 	t.parser.SetClipboardPolicy(pol)
 }
 
+// SetCaptureObserver registers (or clears, with nil) an observer for this
+// terminal's output-capture events. See purfecterm.CaptureObserver.
+func (t *Terminal) SetCaptureObserver(o purfecterm.CaptureObserver) {
+	t.parser.SetCaptureObserver(o)
+}
+
 // SendResponse delivers the terminal's own answer to the program running
 // inside it -- an OSC 52 query reply today, and DSR/DA once those are
 // implemented. It goes on the same wire as keystrokes, but it is NOT input:
