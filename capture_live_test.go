@@ -38,8 +38,20 @@ func (o *liveObserver) OnScrollLineOff(n int) {
 func (o *liveObserver) OnClearScreen(sgr string) {
 	o.events = append(o.events, liveEvent{kind: "clear", text: sgr})
 }
-func (o *liveObserver) OnClearToEndOfLine(x, y int, sgr string) {
+func (o *liveObserver) OnClearEndOfLine(x, y int, sgr string) {
 	o.events = append(o.events, liveEvent{kind: "eol", x: x, y: y, text: sgr})
+}
+func (o *liveObserver) OnClearBeginOfLine(x, y int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "bol", x: x, y: y, text: sgr})
+}
+func (o *liveObserver) OnClearLine(y int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "line", y: y, text: sgr})
+}
+func (o *liveObserver) OnClearEndOfScreen(x, y int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "eos", x: x, y: y, text: sgr})
+}
+func (o *liveObserver) OnClearBeginOfScreen(x, y int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "bos", x: x, y: y, text: sgr})
 }
 
 func (o *liveObserver) kinds() []string {
@@ -267,6 +279,40 @@ func TestCaptureLiveClearToEOL(t *testing.T) {
 	}
 	if !containsSub(eol.text, "41") {
 		t.Errorf("EOL pen = %q, want the red (41) background", eol.text)
+	}
+}
+
+// The rest of the erase family each fires its own event, carrying the current
+// pen: EL1 begin-of-line, EL2 whole line, ED0 end-of-screen, ED1 begin-of-screen.
+func TestCaptureLiveEraseFamily(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		kind string
+		bg   string
+	}{
+		{"begin-of-line (EL1)", "abc\x1b[2G\x1b[41m\x1b[1K", "bol", "41"},
+		{"whole line (EL2)", "abc\x1b[42m\x1b[2K", "line", "42"},
+		{"end-of-screen (ED0)", "abc\x1b[43m\x1b[0J", "eos", "43"},
+		{"begin-of-screen (ED1)", "abc\x1b[44m\x1b[1J", "bos", "44"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, p, obs := newLiveTerm(20, 3)
+			p.Parse([]byte(c.seq))
+			var ev *liveEvent
+			for i := range obs.events {
+				if obs.events[i].kind == c.kind {
+					ev = &obs.events[i]
+				}
+			}
+			if ev == nil {
+				t.Fatalf("no %s event; kinds=%v", c.kind, obs.kinds())
+			}
+			if !containsSub(ev.text, c.bg) {
+				t.Errorf("%s pen = %q, want bg %s", c.kind, ev.text, c.bg)
+			}
+		})
 	}
 }
 
