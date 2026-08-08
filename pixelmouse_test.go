@@ -95,3 +95,28 @@ func TestXTWINOPSCellPixelSize(t *testing.T) {
 		t.Fatalf("CSI 18 t = %q, want %q", got, "\x1b[8;24;80t")
 	}
 }
+
+// When a logical size is set via CSI 8 t, the text-area reports (CSI 14/18 t)
+// must answer the effective (logical) grid the application writes into, not the
+// physical size — otherwise a query reads back a different geometry than the one
+// the app just asked for.
+func TestXTWINOPSTextAreaHonorsLogicalSize(t *testing.T) {
+	p, b, resp := newRespParser(80, 24)
+	b.SetCellPixelSize(9, 20) // width 9, height 20 device px
+
+	p.Parse([]byte("\x1b[8;25;40t")) // logical size: 25 rows, 40 cols
+	if cols, rows := b.GetEffectiveSize(); cols != 40 || rows != 25 {
+		t.Fatalf("GetEffectiveSize() = %d,%d want 40,25", cols, rows)
+	}
+
+	p.Parse([]byte("\x1b[18t"))
+	if got := string(*resp); got != "\x1b[8;25;40t" {
+		t.Fatalf("CSI 18 t under logical size = %q, want %q", got, "\x1b[8;25;40t")
+	}
+
+	*resp = nil
+	p.Parse([]byte("\x1b[14t"))
+	if got := string(*resp); got != "\x1b[4;500;360t" { // 25*20, 40*9
+		t.Fatalf("CSI 14 t under logical size = %q, want %q", got, "\x1b[4;500;360t")
+	}
+}
