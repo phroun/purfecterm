@@ -35,8 +35,11 @@ func (o *liveObserver) OnBackspace(x, y int) {
 func (o *liveObserver) OnScrollLineOff(n int) {
 	o.events = append(o.events, liveEvent{kind: "scrolloff", n: n})
 }
-func (o *liveObserver) OnClearScreen() {
-	o.events = append(o.events, liveEvent{kind: "clear"})
+func (o *liveObserver) OnClearScreen(sgr string) {
+	o.events = append(o.events, liveEvent{kind: "clear", text: sgr})
+}
+func (o *liveObserver) OnClearToEndOfLine(x, y int, sgr string) {
+	o.events = append(o.events, liveEvent{kind: "eol", x: x, y: y, text: sgr})
 }
 
 func (o *liveObserver) kinds() []string {
@@ -226,17 +229,52 @@ func TestCaptureLiveScrollOff(t *testing.T) {
 	}
 }
 
-// A screen clear fires OnClearScreen.
+// A screen clear fires OnClearScreen carrying the pen active at the clear (the
+// screen background), so a blue-background clear reports the blue pen.
 func TestCaptureLiveClear(t *testing.T) {
 	_, p, obs := newLiveTerm(20, 3)
-	p.Parse([]byte("hi\x1b[2J"))
-	clears := 0
-	for _, e := range obs.events {
-		if e.kind == "clear" {
-			clears++
+	p.Parse([]byte("hi\x1b[44m\x1b[2J")) // set bg blue, then clear
+	var clear *liveEvent
+	for i := range obs.events {
+		if obs.events[i].kind == "clear" {
+			clear = &obs.events[i]
 		}
 	}
-	if clears != 1 {
-		t.Fatalf("got %d clear events, want 1; kinds=%v", clears, obs.kinds())
+	if clear == nil {
+		t.Fatalf("no clear event; kinds=%v", obs.kinds())
 	}
+	if clear.text == "" || !containsSub(clear.text, "44") {
+		t.Fatalf("clear pen = %q, want the blue (44) background", clear.text)
+	}
+}
+
+// An erase-to-end-of-line fires OnClearToEndOfLine at the cursor, carrying the
+// current pen whose background fills the erased tail.
+func TestCaptureLiveClearToEOL(t *testing.T) {
+	_, p, obs := newLiveTerm(20, 3)
+	p.Parse([]byte("abcdef\x1b[3G\x1b[41m\x1b[K")) // write, cursor to col 3, bg red, erase to EOL
+	var eol *liveEvent
+	for i := range obs.events {
+		if obs.events[i].kind == "eol" {
+			eol = &obs.events[i]
+		}
+	}
+	if eol == nil {
+		t.Fatalf("no clear-to-EOL event; kinds=%v", obs.kinds())
+	}
+	if eol.x != 2 {
+		t.Errorf("EOL x = %d, want 2 (cursor col)", eol.x)
+	}
+	if !containsSub(eol.text, "41") {
+		t.Errorf("EOL pen = %q, want the red (41) background", eol.text)
+	}
+}
+
+func containsSub(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

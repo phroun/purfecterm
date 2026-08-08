@@ -104,7 +104,12 @@ type CaptureObserver interface {
 	OnLineWrap(x, y int)   // auto-wrap at the right margin, after the move
 	OnBackspace(x, y int)  // backspace, after the move
 	OnScrollLineOff(n int) // n lines scrolled off the top
-	OnClearScreen()        // the screen was cleared
+	// OnClearScreen reports a full-screen clear; sgr is the pen active at the
+	// clear (the screen's background-colour-erase pen), empty for the default.
+	OnClearScreen(sgr string)
+	// OnClearToEndOfLine reports an erase from (x, y) to the right margin; sgr is
+	// the current pen, whose background fills the erased cells. Empty for default.
+	OnClearToEndOfLine(x, y int, sgr string)
 }
 
 // NopCaptureObserver is a CaptureObserver that ignores every event. Embed it to
@@ -112,15 +117,16 @@ type CaptureObserver interface {
 // interface grows.
 type NopCaptureObserver struct{}
 
-func (NopCaptureObserver) OnOutput([]byte)                  {}
-func (NopCaptureObserver) OnLineOff([]Cell, LineInfo)       {}
-func (NopCaptureObserver) OnWrite(int, int, string, string) {}
-func (NopCaptureObserver) OnCursorMove(int, int)            {}
-func (NopCaptureObserver) OnNewline(int, int)               {}
-func (NopCaptureObserver) OnLineWrap(int, int)              {}
-func (NopCaptureObserver) OnBackspace(int, int)             {}
-func (NopCaptureObserver) OnScrollLineOff(int)              {}
-func (NopCaptureObserver) OnClearScreen()                   {}
+func (NopCaptureObserver) OnOutput([]byte)                     {}
+func (NopCaptureObserver) OnLineOff([]Cell, LineInfo)          {}
+func (NopCaptureObserver) OnWrite(int, int, string, string)    {}
+func (NopCaptureObserver) OnCursorMove(int, int)               {}
+func (NopCaptureObserver) OnNewline(int, int)                  {}
+func (NopCaptureObserver) OnLineWrap(int, int)                 {}
+func (NopCaptureObserver) OnBackspace(int, int)                {}
+func (NopCaptureObserver) OnScrollLineOff(int)                 {}
+func (NopCaptureObserver) OnClearScreen(string)                {}
+func (NopCaptureObserver) OnClearToEndOfLine(int, int, string) {}
 
 // SetCaptureObserver registers (or clears, with nil) the observer that receives
 // this terminal's capture events. See CaptureObserver. It lives on the buffer —
