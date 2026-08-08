@@ -2,6 +2,7 @@ package purfecterm
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +46,55 @@ func TestCaptureObserverOnOutput(t *testing.T) {
 	p.Parse([]byte("after"))
 	if len(rec.chunks) != 2 {
 		t.Errorf("recorded %d chunks after clearing, want still 2", len(rec.chunks))
+	}
+}
+
+type lineObserver struct {
+	NopCaptureObserver
+	off []string
+}
+
+func (o *lineObserver) OnLineOff(line []Cell, info LineInfo) {
+	o.off = append(o.off, SerializeLineANS(line, info))
+}
+
+// OnLineOff fires as each line scrolls off the top; EmitRemainingScreenLines
+// flushes the on-screen tail. Together they are the ordered transcript, and a
+// plain line serializes to exactly its text.
+func TestCaptureLineOff(t *testing.T) {
+	b := NewBuffer(20, 3, 100) // 3 visible rows
+	p := NewParser(b)
+	obs := &lineObserver{}
+	p.SetCaptureObserver(obs)
+
+	// Five lines into a 3-row screen: the first two scroll off.
+	p.Parse([]byte("L1\r\nL2\r\nL3\r\nL4\r\nL5"))
+	if got := obs.off; len(got) != 2 || got[0] != "L1" || got[1] != "L2" {
+		t.Fatalf("scrolled-off = %q, want [L1 L2] (plain, no escapes)", got)
+	}
+
+	// The tail still on screen completes the transcript, in order.
+	b.EmitRemainingScreenLines()
+	tail := obs.off[2:]
+	if len(tail) != 3 || tail[0] != "L3" || tail[1] != "L4" || tail[2] != "L5" {
+		t.Fatalf("flushed tail = %q, want [L3 L4 L5]", tail)
+	}
+}
+
+// SerializeLineANS keeps colour as SGR and leaves plain runs bare.
+func TestSerializeLineANS(t *testing.T) {
+	b := NewBuffer(20, 3, 100)
+	NewParser(b).Parse([]byte("a\x1b[31mb\x1b[0mc")) // a, red b, default c
+	b.mu.RLock()
+	line := b.screen[0]
+	info := b.lineInfos[0]
+	b.mu.RUnlock()
+	got := SerializeLineANS(line, info)
+	// Some SGR must wrap the b, and the a/c must be present as plain text.
+	if !strings.Contains(got, "a") || !strings.Contains(got, "b") || !strings.Contains(got, "c") {
+		t.Fatalf("serialized = %q, want a/b/c present", got)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("serialized = %q, want SGR for the coloured cell", got)
 	}
 }

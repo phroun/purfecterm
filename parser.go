@@ -49,10 +49,6 @@ type Parser struct {
 	clipboardPolicy ClipboardPolicy
 	responseSink    func([]byte)
 
-	// captureObserver receives output-capture events; nil (the default) means
-	// none, at no cost. See CaptureObserver.
-	captureObserver CaptureObserver
-
 	// UTF-8 multi-byte handling
 	utf8Buf  []byte
 	utf8Need int
@@ -71,19 +67,25 @@ func NewParser(buffer *Buffer) *Parser {
 }
 
 // CaptureObserver receives a terminal's output as events, for a host that wants
-// to mirror or log it beyond what the screen buffer keeps. Registered on a
-// Parser with SetCaptureObserver; nil means no events and no cost. Calls happen
-// on the goroutine that feeds the parser, in feed order.
-//
-// Only OnOutput exists today — the raw byte tee. Line-scrolled-off and
-// live-screen events join this interface as those capture rungs are built; an
-// implementer that wants only some of them should embed NopCaptureObserver so
-// later additions do not break it.
+// to mirror or log it beyond what the screen buffer keeps. Registered with
+// SetCaptureObserver; nil means no events and no cost. Calls happen on the
+// goroutine that feeds the terminal, in feed order. An implementer that wants
+// only some events should embed NopCaptureObserver so later additions to this
+// interface do not break it.
 type CaptureObserver interface {
 	// OnOutput reports a chunk of input exactly as the parser received it,
-	// before parsing — the literal bytes, in the same chunks they were fed. The
-	// slice is valid only for the duration of the call; copy it to retain.
+	// before parsing — the literal bytes, in the same chunks they were fed
+	// (the `raw` capture rung). The slice is valid only for the duration of the
+	// call; copy it to retain.
 	OnOutput(data []byte)
+
+	// OnLineOff reports one line leaving the screen into scrollback — a line of
+	// the ordered transcript (the `lines` rung), final at this point. It fires
+	// from every path that moves a line off: a scroll, a resize that shrinks the
+	// screen, and the scrollback-preserving clear/reset. line and info are valid
+	// only for the call. SerializeLineANS turns them into a self-contained
+	// string.
+	OnLineOff(line []Cell, info LineInfo)
 }
 
 // NopCaptureObserver is a CaptureObserver that ignores every event. Embed it to
@@ -91,12 +93,17 @@ type CaptureObserver interface {
 // interface grows.
 type NopCaptureObserver struct{}
 
-func (NopCaptureObserver) OnOutput([]byte) {}
+func (NopCaptureObserver) OnOutput([]byte)            {}
+func (NopCaptureObserver) OnLineOff([]Cell, LineInfo) {}
 
 // SetCaptureObserver registers (or clears, with nil) the observer that receives
-// this parser's capture events. See CaptureObserver.
+// this terminal's capture events. See CaptureObserver. It lives on the buffer —
+// most events (line-off, and the live-screen events to come) originate there —
+// so this delegates; a nil buffer (never, for a NewParser) is a no-op.
 func (p *Parser) SetCaptureObserver(o CaptureObserver) {
-	p.captureObserver = o
+	if p.buffer != nil {
+		p.buffer.SetCaptureObserver(o)
+	}
 }
 
 // Parse processes input data and updates the terminal buffer
@@ -104,8 +111,8 @@ func (p *Parser) Parse(data []byte) {
 	// The raw tee: the literal bytes as received, before parsing. This is the
 	// `raw` capture rung, and it fires for every consumer of the parser (the
 	// standalone CLI's read loop, an embedded host) alike.
-	if p.captureObserver != nil {
-		p.captureObserver.OnOutput(data)
+	if p.buffer != nil && p.buffer.captureObserver != nil {
+		p.buffer.captureObserver.OnOutput(data)
 	}
 	for _, b := range data {
 		p.processByte(b)
@@ -533,9 +540,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 // executeWindowManipulation handles ESC [ Ps ; Ps ; Ps t - Window manipulation
 // We specifically handle ESC [ 8 ; rows ; cols t to set logical screen size
 // Custom extensions:
-//   ESC [ 9 ; 40 ; 0 t - Disable 40-column mode
-//   ESC [ 9 ; 40 ; 1 t - Enable 40-column mode
-//   ESC [ 9 ; 25 t - Set line density to 25 (also: 30, 43, 50, 60)
+//
+//	ESC [ 9 ; 40 ; 0 t - Disable 40-column mode
+//	ESC [ 9 ; 40 ; 1 t - Enable 40-column mode
+//	ESC [ 9 ; 25 t - Set line density to 25 (also: 30, 43, 50, 60)
 func (p *Parser) executeWindowManipulation() {
 	if len(p.csiParams) == 0 {
 		return
@@ -589,12 +597,12 @@ func (p *Parser) executeWindowManipulation() {
 			p.buffer.SetLineDensity(subCmd)
 		}
 
-	// Other window manipulation commands could be added here
-	// case 1: De-iconify window
-	// case 2: Iconify window
-	// case 3: Move window
-	// case 4: Resize window in pixels
-	// etc.
+		// Other window manipulation commands could be added here
+		// case 1: De-iconify window
+		// case 2: Iconify window
+		// case 3: Move window
+		// case 4: Resize window in pixels
+		// etc.
 	}
 }
 
@@ -1064,18 +1072,19 @@ func (p *Parser) executeOSC() {
 		p.executeOSCScriptFont(args)
 	case 7003: // Screen crop and splits
 		p.executeOSCScreenCrop(args)
-	// Other OSC commands (title, etc.) could be added here
+		// Other OSC commands (title, etc.) could be added here
 	}
 }
 
 // executeOSCPalette handles OSC 7000 palette commands
 // Format: ESC ] 7000 ; cmd BEL
 // Commands:
-//   da           - delete all palettes
-//   d;N          - delete palette N
-//   i;N;LEN      - init palette N with LEN entries
-//   s;N;IDX;COL  - set palette N index IDX to color COL
-//   s;N;IDX;2;COL - set palette N index IDX to dim color COL
+//
+//	da           - delete all palettes
+//	d;N          - delete palette N
+//	i;N;LEN      - init palette N with LEN entries
+//	s;N;IDX;COL  - set palette N index IDX to color COL
+//	s;N;IDX;2;COL - set palette N index IDX to dim color COL
 func (p *Parser) executeOSCPalette(args string) {
 	parts := strings.Split(args, ";")
 	if len(parts) == 0 {
@@ -1159,9 +1168,10 @@ func (p *Parser) executeOSCPalette(args string) {
 // executeOSCGlyph handles OSC 7001 glyph commands
 // Format: ESC ] 7001 ; cmd BEL
 // Commands:
-//   da                    - delete all glyphs
-//   d;RUNE                - delete glyph for rune
-//   s;RUNE;W;P1;P2;...    - set glyph for rune (W=width, P=pixels)
+//
+//	da                    - delete all glyphs
+//	d;RUNE                - delete glyph for rune
+//	s;RUNE;W;P1;P2;...    - set glyph for rune (W=width, P=pixels)
 func (p *Parser) executeOSCGlyph(args string) {
 	parts := strings.Split(args, ";")
 	if len(parts) == 0 {
