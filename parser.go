@@ -86,6 +86,25 @@ type CaptureObserver interface {
 	// only for the call. SerializeLineANS turns them into a self-contained
 	// string.
 	OnLineOff(line []Cell, info LineInfo)
+
+	// The live-screen events (the `live` rung) let an observer mirror the screen
+	// in place. They fire only while live events are enabled (SetCaptureLive),
+	// since they sit on the write/cursor hot path. Positions are 0-based cells.
+	// Each is a distinct op so an observer may treat them differently (a wrap is
+	// not a newline is not an absolute move), even where a mirror handles several
+	// the same way.
+	//
+	// OnWrite reports a run of printable text placed starting at (x,y) with the
+	// pen as a complete absolute SGR (e.g. "\x1b[0;1;31m", empty for default).
+	// Runs are batched: one call per contiguous same-pen run, flushed before any
+	// other event and at the end of a feed. text/sgr are valid only for the call.
+	OnWrite(x, y int, text, sgr string)
+	OnCursorMove(x, y int) // absolute positioning (CUP), after clamping
+	OnNewline(x, y int)    // line feed / newline, after the move (and any scroll)
+	OnLineWrap(x, y int)   // auto-wrap at the right margin, after the move
+	OnBackspace(x, y int)  // backspace, after the move
+	OnScrollLineOff(n int) // n lines scrolled off the top
+	OnClearScreen()        // the screen was cleared
 }
 
 // NopCaptureObserver is a CaptureObserver that ignores every event. Embed it to
@@ -93,8 +112,15 @@ type CaptureObserver interface {
 // interface grows.
 type NopCaptureObserver struct{}
 
-func (NopCaptureObserver) OnOutput([]byte)            {}
-func (NopCaptureObserver) OnLineOff([]Cell, LineInfo) {}
+func (NopCaptureObserver) OnOutput([]byte)                  {}
+func (NopCaptureObserver) OnLineOff([]Cell, LineInfo)       {}
+func (NopCaptureObserver) OnWrite(int, int, string, string) {}
+func (NopCaptureObserver) OnCursorMove(int, int)            {}
+func (NopCaptureObserver) OnNewline(int, int)               {}
+func (NopCaptureObserver) OnLineWrap(int, int)              {}
+func (NopCaptureObserver) OnBackspace(int, int)             {}
+func (NopCaptureObserver) OnScrollLineOff(int)              {}
+func (NopCaptureObserver) OnClearScreen()                   {}
 
 // SetCaptureObserver registers (or clears, with nil) the observer that receives
 // this terminal's capture events. See CaptureObserver. It lives on the buffer —
@@ -116,6 +142,11 @@ func (p *Parser) Parse(data []byte) {
 	}
 	for _, b := range data {
 		p.processByte(b)
+	}
+	// Flush any accumulated live write-run at the end of the feed so a
+	// partial run isn't held across Parse calls.
+	if p.buffer != nil && p.buffer.liveEnabled() {
+		p.buffer.flushLiveWriteRun()
 	}
 }
 

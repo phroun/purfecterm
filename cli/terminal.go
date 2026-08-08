@@ -726,6 +726,14 @@ func (t *Terminal) SetCaptureObserver(o purfecterm.CaptureObserver) {
 	t.parser.SetCaptureObserver(o)
 }
 
+// SetCaptureLive enables or disables emission of the live (in-place screen
+// mirror) capture events -- OnWrite/OnCursorMove/OnNewline/OnLineWrap/
+// OnBackspace/OnScrollLineOff/OnClearScreen. It is independent of the raw and
+// line observers; the `live` rung turns it on. See purfecterm.Buffer.SetCaptureLive.
+func (t *Terminal) SetCaptureLive(enabled bool) {
+	t.buffer.SetCaptureLive(enabled)
+}
+
 // EmitRemainingCaptureLines reports the current on-screen lines to the capture
 // observer as OnLineOff events — the `lines` rung's end-of-session flush of the
 // content that never scrolled off. See purfecterm.Buffer.EmitRemainingScreenLines.

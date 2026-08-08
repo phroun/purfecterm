@@ -202,6 +202,17 @@ type Buffer struct {
 	// captureObserver receives output-capture events (OnOutput from the parser,
 	// OnLineOff from this buffer); nil (the default) means none, at no cost.
 	captureObserver CaptureObserver
+	// captureLive gates the live-screen events, which sit on the write/cursor hot
+	// path; off unless a live consumer asks (SetCaptureLive).
+	captureLive bool
+	// live write-run batching: printable output is accumulated into one OnWrite
+	// per contiguous same-pen run, flushed before any other live event and at the
+	// end of a feed.
+	liveRun       strings.Builder
+	liveRunX      int
+	liveRunY      int
+	liveRunSGR    string
+	liveRunActive bool
 
 	// Theme state (DECSCNM - Screen Mode)
 	darkTheme          bool // Current theme: true=dark, false=light
@@ -786,6 +797,67 @@ func (b *Buffer) SetCaptureObserver(o CaptureObserver) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.captureObserver = o
+}
+
+// SetCaptureLive enables or disables the live-screen events (the `live` rung).
+// They sit on the write/cursor hot path, so they are off unless a live consumer
+// asks; enabling with no observer is inert.
+func (b *Buffer) SetCaptureLive(enabled bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.captureLive = enabled
+}
+
+// liveEnabled reports whether live-screen events should fire. Caller holds the
+// lock (it is read on the write/cursor path).
+func (b *Buffer) liveEnabled() bool {
+	return b.captureLive && b.captureObserver != nil
+}
+
+// flushLiveWriteRun emits any pending OnWrite run and clears it. Called before
+// every other live event and at the end of a feed, so writes and structural
+// events stay in order and each run carries a single pen. Caller holds the lock.
+func (b *Buffer) flushLiveWriteRun() {
+	if b.liveRunActive {
+		b.captureObserver.OnWrite(b.liveRunX, b.liveRunY, b.liveRun.String(), b.liveRunSGR)
+		b.liveRun.Reset()
+		b.liveRunActive = false
+	}
+}
+
+// currentPenSGR renders the current pen as a complete absolute SGR
+// ("\x1b[0;…m"), or "" when the pen is the default — so a default run carries no
+// escape. The attribute set matches SerializeLineANS.
+func (b *Buffer) currentPenSGR() string {
+	codes := "0"
+	if b.currentBold {
+		codes += ";1"
+	}
+	if b.currentItalic {
+		codes += ";3"
+	}
+	if b.currentUnderline {
+		codes += ";4"
+	}
+	if b.currentBlink {
+		codes += ";5"
+	}
+	if b.currentReverse {
+		codes += ";7"
+	}
+	if b.currentStrikethrough {
+		codes += ";9"
+	}
+	if !b.currentFg.IsDefault() {
+		codes += ";" + b.currentFg.ToSGRCode(true)
+	}
+	if !b.currentBg.IsDefault() {
+		codes += ";" + b.currentBg.ToSGRCode(false)
+	}
+	if codes == "0" {
+		return ""
+	}
+	return "\x1b[" + codes + "m"
 }
 
 // EmitRemainingScreenLines reports the current on-screen lines to the capture

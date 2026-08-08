@@ -248,6 +248,13 @@ func (b *Buffer) writeCharInternal(ch rune) {
 		}
 	}
 
+	// A completed auto-wrap: the pending run belongs to the pre-wrap row, so
+	// flush it, then report the wrap at the new position (the live rung).
+	if shouldWrap && b.autoWrapMode && b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnLineWrap(b.cursorX, b.cursorY)
+	}
+
 	// Ensure screen has enough rows
 	for b.cursorY >= len(b.screen) {
 		b.screen = append(b.screen, b.makeEmptyLine())
@@ -290,6 +297,19 @@ func (b *Buffer) writeCharInternal(ch rune) {
 		b.standardOverwriteFixup(b.cursorY, b.cursorX, charWidth)
 	}
 	b.screen[b.cursorY][b.cursorX] = cell
+	// Accumulate this cell into the live write run: one OnWrite per contiguous
+	// same-pen run on a row. A pen change (detected here, so the SGR setters need
+	// no taps) or a row change ends the run.
+	if b.liveEnabled() {
+		pen := b.currentPenSGR()
+		if b.liveRunActive && (pen != b.liveRunSGR || b.cursorY != b.liveRunY) {
+			b.flushLiveWriteRun()
+		}
+		if !b.liveRunActive {
+			b.liveRunX, b.liveRunY, b.liveRunSGR, b.liveRunActive = b.cursorX, b.cursorY, pen, true
+		}
+		b.liveRun.WriteRune(ch)
+	}
 	// Only set direction to right if we didn't wrap (wrap already set it to left)
 	if !shouldWrap {
 		b.setHorizMoveDir(1, false) // Character output moves cursor right
@@ -362,6 +382,9 @@ func (b *Buffer) ensureLineLength(row, length int) {
 func (b *Buffer) Newline() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.cursorX = 0
 	b.trackCursorYMove(b.cursorY + 1)
 	b.cursorY++
@@ -369,6 +392,9 @@ func (b *Buffer) Newline() {
 	if b.cursorY >= effectiveRows {
 		b.scrollUpInternal()
 		b.cursorY = effectiveRows - 1
+	}
+	if b.liveEnabled() {
+		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}
 	b.markDirty()
 }
@@ -377,8 +403,14 @@ func (b *Buffer) Newline() {
 func (b *Buffer) CarriageReturn() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.setHorizMoveDir(-1, false) // Moving left
 	b.cursorX = 0
+	if b.liveEnabled() {
+		b.captureObserver.OnCursorMove(b.cursorX, b.cursorY)
+	}
 	b.markDirty()
 }
 
@@ -386,12 +418,18 @@ func (b *Buffer) CarriageReturn() {
 func (b *Buffer) LineFeed() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.trackCursorYMove(b.cursorY + 1)
 	b.cursorY++
 	effectiveRows := b.EffectiveRows()
 	if b.cursorY >= effectiveRows {
 		b.scrollUpInternal()
 		b.cursorY = effectiveRows - 1
+	}
+	if b.liveEnabled() {
+		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}
 	b.markDirty()
 }
@@ -400,11 +438,17 @@ func (b *Buffer) LineFeed() {
 func (b *Buffer) Tab() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.setHorizMoveDir(1, false) // Moving right
 	b.cursorX = ((b.cursorX / 8) + 1) * 8
 	effectiveCols := b.EffectiveCols()
 	if b.cursorX >= effectiveCols {
 		b.cursorX = effectiveCols - 1
+	}
+	if b.liveEnabled() {
+		b.captureObserver.OnCursorMove(b.cursorX, b.cursorY)
 	}
 	b.markDirty()
 }
@@ -413,6 +457,9 @@ func (b *Buffer) Tab() {
 func (b *Buffer) Backspace() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+	}
 	b.setHorizMoveDir(-1, false) // Moving left
 	if b.cursorX > 0 {
 		if b.flexWidthMode {
@@ -422,6 +469,9 @@ func (b *Buffer) Backspace() {
 			b.cursorX = b.visualToLogicalLocked(b.cursorY, v-1)
 		}
 	}
+	if b.liveEnabled() {
+		b.captureObserver.OnBackspace(b.cursorX, b.cursorY)
+	}
 	b.markDirty()
 }
 
@@ -430,6 +480,11 @@ func (b *Buffer) Backspace() {
 func (b *Buffer) scrollUpInternal() {
 	if len(b.screen) == 0 {
 		return
+	}
+
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnScrollLineOff(1)
 	}
 
 	// Push top line to scrollback - this is a scroll-causing event
@@ -481,6 +536,10 @@ func (b *Buffer) ScrollDown(n int) {
 func (b *Buffer) ClearScreen() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.liveEnabled() {
+		b.flushLiveWriteRun()
+		b.captureObserver.OnClearScreen()
+	}
 	b.updateScreenInfo() // Update screen default attributes
 	b.initScreen()
 
