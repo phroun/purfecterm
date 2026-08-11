@@ -199,6 +199,20 @@ func keyToBytes(key string) []byte {
 		}
 	}
 
+	// Glyph modifier (private kitty extension): a "G-"-prefixed key carries an
+	// AltGr / ISO_Level3_Shift-composed character (see direct-key-handler's
+	// parseKittyProtocol). Encode it as a kitty CSI-u sequence with the Glyph
+	// modifier bit (value 256, sent 1-indexed as 257) and the codepoint set to
+	// the produced glyph, so a kitty-aware child receives a distinct "G-" chord
+	// it can bind. This is the one CSI-u form this legacy encoder emits; the
+	// glyph could not otherwise survive (a plain "€" is indistinguishable from
+	// a typed one, and the "-" in "G-€" bars the multi-byte fallback below).
+	if strings.HasPrefix(key, "G-") {
+		if r := []rune(key[2:]); len(r) == 1 {
+			return []byte(fmt.Sprintf("\x1b[%d;257u", r[0]))
+		}
+	}
+
 	// Parse modifier prefixes and base key
 	mods, baseKey := parseModifiers(key)
 	if mods > 0 {
