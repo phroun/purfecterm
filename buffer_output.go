@@ -301,6 +301,7 @@ func (b *Buffer) writeCharInternal(ch rune) {
 		Reverse:           b.currentReverse,
 		Blink:             b.currentBlink,
 		Strikethrough:     b.currentStrikethrough,
+		Protected:         b.currentProtected,
 		FlexWidth:         b.currentFlexWidth,
 		BGP:               b.currentBGP,
 		XFlip:             b.currentXFlip,

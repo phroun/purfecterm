@@ -215,6 +215,7 @@ type Buffer struct {
 	leftRightMarginMode bool
 
 	// Standard ANSI modes and tab stops.
+	currentProtected bool        // DECSCA: written cells are protected from selective erase
 	insertMode      bool         // IRM (mode 4): printed chars insert (shift right)
 	newLineMode     bool         // LNM (mode 20): output LF also does CR
 	lastPrintedChar rune         // for REP (CSI b)

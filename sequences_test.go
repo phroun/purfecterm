@@ -258,3 +258,43 @@ func TestOSCColor(t *testing.T) {
 		t.Fatal("RIS should reset the background override")
 	}
 }
+
+// DECRQSS (DCS $ q <req> ST) reports current settings.
+func TestDECRQSS(t *testing.T) {
+	b := NewBuffer(20, 10, 100)
+	p, resp := respParser(b)
+
+	p.Parse([]byte("\x1b[3;7r"))      // DECSTBM
+	p.Parse([]byte("\x1bP$qr\x1b\\")) // request DECSTBM
+	if *resp != "\x1bP1$r3;7r\x1b\\" {
+		t.Fatalf("DECRQSS r = %q", *resp)
+	}
+	*resp = ""
+	p.Parse([]byte("\x1b[1;31m"))     // bold red
+	p.Parse([]byte("\x1bP$qm\x1b\\")) // request SGR
+	if *resp != "\x1bP1$r0;1;31m\x1b\\" {
+		t.Fatalf("DECRQSS m = %q", *resp)
+	}
+	*resp = ""
+	p.Parse([]byte("\x1bP$qZ\x1b\\")) // unknown -> invalid
+	if *resp != "\x1bP0$r\x1b\\" {
+		t.Fatalf("DECRQSS invalid = %q", *resp)
+	}
+}
+
+// DECSCA marks cells protected; DECSEL/DECSED erase only unprotected cells.
+func TestSelectiveErase(t *testing.T) {
+	b := NewBuffer(10, 2, 100)
+	p := NewParser(b)
+	p.Parse([]byte("\x1b[1;1H"))
+	p.Parse([]byte("\x1b[1\"qAB")) // DECSCA protect on, write AB
+	p.Parse([]byte("\x1b[0\"qCD")) // DECSCA protect off, write CD
+	p.Parse([]byte("\x1b[?2K"))    // DECSEL whole line
+
+	if cellChar(b, 0, 0) != 'A' || cellChar(b, 1, 0) != 'B' {
+		t.Fatal("protected cells should survive selective erase")
+	}
+	if cellChar(b, 2, 0) != ' ' || cellChar(b, 3, 0) != ' ' {
+		t.Fatal("unprotected cells should be erased")
+	}
+}

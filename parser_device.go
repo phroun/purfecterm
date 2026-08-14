@@ -1,6 +1,73 @@
 package purfecterm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// handleDCS collects a Device Control String (ESC P ... ST). ST is ESC \ (via
+// stateDCSEsc), 8-bit 0x9c, or the lenient BEL.
+func (p *Parser) handleDCS(b byte) {
+	switch b {
+	case 0x1b:
+		p.state = stateDCSEsc
+	case 0x9c, 0x07:
+		p.executeDCS()
+		p.state = stateGround
+	default:
+		p.dcsBuf.WriteByte(b)
+	}
+}
+
+// handleDCSEsc handles the ESC seen inside a DCS string: ESC \ terminates,
+// otherwise the ESC was data.
+func (p *Parser) handleDCSEsc(b byte) {
+	if b == '\\' {
+		p.executeDCS()
+		p.state = stateGround
+		return
+	}
+	p.dcsBuf.WriteByte(0x1b)
+	p.state = stateDCS
+	p.handleDCS(b)
+}
+
+// executeDCS dispatches a completed DCS string. Only DECRQSS (DCS $ q ... ST) is
+// handled today; other device control strings are ignored.
+func (p *Parser) executeDCS() {
+	s := p.dcsBuf.String()
+	if strings.HasPrefix(s, "$q") {
+		p.executeDECRQSS(s[2:])
+	}
+}
+
+// executeDECRQSS answers DECRQSS - Request Selection or Setting. Valid requests
+// reply DCS 1 $ r <setting> ST; unknown ones reply DCS 0 $ r ST.
+func (p *Parser) executeDECRQSS(req string) {
+	if p.responseSink == nil {
+		return
+	}
+	body, ok := p.decrqssBody(req)
+	if ok {
+		p.responseSink([]byte("\x1bP1$r" + body + "\x1b\\"))
+	} else {
+		p.responseSink([]byte("\x1bP0$r\x1b\\"))
+	}
+}
+
+func (p *Parser) decrqssBody(req string) (string, bool) {
+	switch req {
+	case "r": // DECSTBM
+		top, bottom := p.buffer.GetScrollRegion()
+		return fmt.Sprintf("%d;%dr", top+1, bottom+1), true
+	case "s": // DECSLRM
+		left, right := p.buffer.GetLeftRightMargins()
+		return fmt.Sprintf("%d;%ds", left+1, right+1), true
+	case "m": // SGR
+		return p.buffer.SGRReport() + "m", true
+	}
+	return "", false
+}
 
 // Device status / attribute reports. All replies go through the response sink
 // (SetResponseSink); with no sink registered they are silently dropped.

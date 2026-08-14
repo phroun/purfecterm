@@ -19,6 +19,8 @@ const (
 	stateOSCEsc                  // ESC seen inside an OSC string (expecting the \ of ST)
 	stateCharset                 // After ESC ( or ESC )
 	stateDECLineAttr             // After ESC # (waiting for line attribute command)
+	stateDCS                     // After ESC P (collecting a DCS string)
+	stateDCSEsc                  // ESC seen inside a DCS string (expecting the \ of ST)
 )
 
 // SGRParam represents an SGR parameter with optional subparameters
@@ -43,6 +45,9 @@ type Parser struct {
 	// OSC accumulator
 	oscCmd int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
 	oscBuf strings.Builder // OSC command arguments
+
+	// DCS accumulator (ESC P ... ST)
+	dcsBuf strings.Builder
 
 	// OSC 52 clipboard (see clipboard.go)
 	onClipboard     func(ev ClipboardEvent, reply func([]byte))
@@ -249,6 +254,10 @@ func (p *Parser) processByte(b byte) {
 		p.state = stateGround
 	case stateDECLineAttr:
 		p.handleDECLineAttr(b)
+	case stateDCS:
+		p.handleDCS(b)
+	case stateDCSEsc:
+		p.handleDCSEsc(b)
 	}
 }
 
@@ -304,6 +313,9 @@ func (p *Parser) handleEscape(b byte) {
 	case ']': // OSC - Operating System Command
 		p.state = stateOSC
 		p.oscBuf.Reset()
+	case 'P': // DCS - Device Control String (ESC P ... ST)
+		p.state = stateDCS
+		p.dcsBuf.Reset()
 	case '(', ')': // Character set designation
 		p.state = stateCharset
 	case '#': // DEC line attribute commands (DECDHL, DECDWL, DECSWL, DECALN)
@@ -328,6 +340,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetNewLineMode(false)
 		p.buffer.resetKeyModes()
 		p.buffer.resetOSCColors()
+		p.buffer.SetProtectedAttr(false)
 		p.state = stateGround
 	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
 		p.buffer.LineFeed()
@@ -514,7 +527,11 @@ func (p *Parser) executeCSI(finalByte byte) {
 		col := p.getParam(1, 1) - 1
 		p.buffer.SetCursorPosition(col, row)
 
-	case 'J': // ED - Erase in Display
+	case 'J': // ED - Erase in Display / DECSED (CSI ? Ps J - selective)
+		if p.csiPrivate == '?' {
+			p.buffer.SelectiveEraseDisplay(p.getParam(0, 0))
+			break
+		}
 		switch p.getParam(0, 0) {
 		case 0:
 			p.buffer.ClearToEndOfScreen()
@@ -525,7 +542,11 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.buffer.SetCursor(0, 0)
 		}
 
-	case 'K': // EL - Erase in Line
+	case 'K': // EL - Erase in Line / DECSEL (CSI ? Ps K - selective)
+		if p.csiPrivate == '?' {
+			p.buffer.SelectiveEraseLine(p.getParam(0, 0))
+			break
+		}
 		switch p.getParam(0, 0) {
 		case 0:
 			p.buffer.ClearToEndOfLine()
@@ -638,12 +659,16 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.buffer.ResetScrollRegion()
 			p.buffer.ResetAttributes()
 			p.buffer.SetInsertMode(false)
+			p.buffer.SetProtectedAttr(false)
 			p.buffer.SetCursor(0, 0)
 		}
 
-	case 'q': // DECSCUSR - Set Cursor Style (with space intermediate)
+	case 'q': // DECSCUSR (SP q) / DECSCA (" q - select character protection)
 		if p.csiIntermediate == ' ' {
 			p.executeDECSCUSR()
+		} else if p.csiIntermediate == '"' {
+			// DECSCA: Ps 1 = protected, 0/2 = not protected.
+			p.buffer.SetProtectedAttr(p.getParam(0, 0) == 1)
 		}
 	}
 }
