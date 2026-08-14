@@ -226,6 +226,14 @@ type Buffer struct {
 	focusReporting bool // ?1004: report focus in/out as CSI I / CSI O
 	altScrollMode  bool // ?1007: wheel sends arrow keys on the alt screen
 
+	// OSC state: window title (0/1/2) and color overrides (4/10/11/12).
+	windowTitle   string
+	onTitleChange func(string)
+	oscFg         *Color // OSC 10 default-foreground override
+	oscBg         *Color // OSC 11 default-background override
+	oscCursor     *Color // OSC 12 cursor-color override
+	oscPalette    map[int]Color
+
 	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
 	// fields hold the alternate screen and mainStash holds the primary screen's
 	// context (content, cursor, margins, and its own scrollback), restored on

@@ -327,6 +327,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetInsertMode(false)
 		p.buffer.SetNewLineMode(false)
 		p.buffer.resetKeyModes()
+		p.buffer.resetOSCColors()
 		p.state = stateGround
 	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
 		p.buffer.LineFeed()
@@ -1217,6 +1218,12 @@ func (p *Parser) executeOSC() {
 	args := p.oscBuf.String()
 
 	switch p.oscCmd {
+	case 0, 1, 2: // Set window/icon title
+		p.executeOSCTitle(args)
+	case 4: // Set/query 256-color palette entry
+		p.executeOSCPaletteColor(args)
+	case 10, 11, 12: // Set/query default foreground / background / cursor color
+		p.executeOSCColorFgBg(p.oscCmd, args)
 	case 52: // Clipboard (OSC 52)
 		p.executeOSCClipboard(args)
 	case 7000: // Palette management

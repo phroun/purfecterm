@@ -216,3 +216,45 @@ func TestDECRQMReports(t *testing.T) {
 		t.Fatalf("DECRQM ?7 = %q, want set", *resp)
 	}
 }
+
+// OSC 0/1/2 set the window title and fire the callback.
+func TestOSCTitle(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	p := NewParser(b)
+	var got string
+	b.SetTitleChangeCallback(func(s string) { got = s })
+	p.Parse([]byte("\x1b]2;Hello World\x07"))
+	if b.GetWindowTitle() != "Hello World" || got != "Hello World" {
+		t.Fatalf("title = %q, callback = %q", b.GetWindowTitle(), got)
+	}
+}
+
+// OSC 4/10/11/12 set and query colors; RIS clears overrides.
+func TestOSCColor(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	p, resp := respParser(b)
+
+	p.Parse([]byte("\x1b]11;rgb:12/34/56\x07")) // set background
+	if bg := b.EffectiveDefaultBackground(); bg.R != 0x12 || bg.G != 0x34 || bg.B != 0x56 {
+		t.Fatalf("bg = %v", bg)
+	}
+	p.Parse([]byte("\x1b]11;?\x07")) // query background
+	if *resp != "\x1b]11;rgb:1212/3434/5656\x07" {
+		t.Fatalf("bg query = %q", *resp)
+	}
+
+	p.Parse([]byte("\x1b]10;#ffffff\x07")) // set foreground via #rrggbb
+	if fg := b.EffectiveDefaultForeground(); fg.R != 0xff || fg.G != 0xff || fg.B != 0xff {
+		t.Fatalf("fg = %v", fg)
+	}
+
+	p.Parse([]byte("\x1b]4;5;rgb:00/ff/00\x07")) // palette entry 5
+	if pc := b.GetPaletteColor(5); pc.R != 0 || pc.G != 0xff || pc.B != 0 {
+		t.Fatalf("palette 5 = %v", pc)
+	}
+
+	p.Parse([]byte("\x1bc")) // RIS
+	if b.EffectiveDefaultBackground() != DefaultBackground {
+		t.Fatal("RIS should reset the background override")
+	}
+}
