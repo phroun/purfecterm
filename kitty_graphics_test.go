@@ -607,3 +607,24 @@ func TestKittyImageStoreIsBounded(t *testing.T) {
 		}
 	})
 }
+
+// A probe for an action this terminal does not implement must be answered with
+// an ERROR, not OK. A client sends these to discover what it may use, so
+// claiming support is what stops it falling back — it goes on to drive an
+// animation that never draws.
+func TestKittyUnsupportedActionsReportError(t *testing.T) {
+	for _, action := range []string{"f", "a", "c"} {
+		b, p, replies := newKittyTestBuffer()
+		p.Parse([]byte("\x1b_Ga=" + action + ",i=42,r=2\x1b\\"))
+		if len(*replies) != 1 {
+			t.Fatalf("a=%s produced %d replies, want 1", action, len(*replies))
+		}
+		if !strings.Contains((*replies)[0], "EINVAL") {
+			t.Errorf("a=%s answered %q, want an error so the client can fall back",
+				action, (*replies)[0])
+		}
+		if len(b.GetImages()) != 0 {
+			t.Errorf("a=%s placed an image", action)
+		}
+	}
+}

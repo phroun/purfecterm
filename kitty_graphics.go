@@ -204,10 +204,13 @@ func (p *Parser) executeKittyGraphics(body string) {
 	case 'd':
 		p.deleteKittyImages(cmd)
 	case 'f', 'a', 'c':
-		// Animation frames and composition are accepted and ignored rather than
-		// answered with an error, so a client that probes for them degrades to
-		// a still image instead of failing outright.
-		p.respondKitty(cmd, cmd.imageID, 0, "OK")
+		// Animation frames (a=f), animation control (a=a) and composition
+		// (a=c) are NOT implemented, and say so. Answering OK to a probe was
+		// exactly backwards: a client asks these to find out what it may use,
+		// so claiming them is what STOPS it falling back to still images —
+		// it goes on to drive an animation that never draws. An error here is
+		// the answer that lets it degrade.
+		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "action not supported")
 	default:
 		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "unsupported action")
 	}

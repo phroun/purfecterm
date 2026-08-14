@@ -261,3 +261,38 @@ func TestEncodeFunctionalKeys(t *testing.T) {
 		t.Errorf("Delete encoded %q, want a ~-terminated sequence", got)
 	}
 }
+
+// ESC with an INTERMEDIATE byte continues into a final byte. Returning to
+// ground on the intermediate left the final byte to be read as text and
+// printed: ESC SP F (S7C1T), which applications send on startup, put a stray
+// "F" on the screen.
+func TestEscapeIntermediateConsumesItsFinalByte(t *testing.T) {
+	for _, seq := range []string{
+		"\x1b F", // S7C1T
+		"\x1b G", // S8C1T
+		"\x1b L", // ANSI conformance level 1
+		"\x1b(B", // charset selection, an intermediate this parser already knew
+	} {
+		b := NewBuffer(20, 5, 100)
+		NewParser(b).Parse([]byte(seq))
+		for x := 0; x < 5; x++ {
+			if c := b.GetVisibleCell(x, 0); c.Char != 0 && c.Char != ' ' {
+				t.Errorf("%q printed %q at column %d; the sequence must be consumed",
+					seq, c.Char, x)
+			}
+		}
+	}
+}
+
+// Text after such a sequence still prints — consuming the final byte must not
+// swallow what follows.
+func TestEscapeIntermediateDoesNotSwallowText(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	NewParser(b).Parse([]byte("\x1b Fhi"))
+	if c := b.GetVisibleCell(0, 0); c.Char != 'h' {
+		t.Errorf("column 0 = %q, want 'h'", c.Char)
+	}
+	if c := b.GetVisibleCell(1, 0); c.Char != 'i' {
+		t.Errorf("column 1 = %q, want 'i'", c.Char)
+	}
+}
