@@ -44,3 +44,30 @@ func (p *Parser) executeDSR() {
 		}
 	}
 }
+
+// executeXTSAVE handles XTSAVE (CSI ? Pm s): stash the current value of each DEC
+// private mode for a later XTRESTORE.
+func (p *Parser) executeXTSAVE() {
+	if p.savedModes == nil {
+		p.savedModes = map[int]bool{}
+	}
+	for _, mode := range p.csiParams {
+		st := p.decrqmStatus(mode)
+		p.savedModes[mode] = st == 1 || st == 3 // set or permanently-set
+	}
+}
+
+// executeXTRESTORE handles XTRESTORE (CSI ? Pm r): restore each DEC private mode
+// to its stashed value. Reuses the private-mode-set path per mode.
+func (p *Parser) executeXTRESTORE() {
+	saved := p.csiParams
+	for _, mode := range saved {
+		val, ok := p.savedModes[mode]
+		if !ok {
+			continue
+		}
+		p.csiParams = []int{mode}
+		p.executePrivateModeSet(val)
+	}
+	p.csiParams = saved
+}

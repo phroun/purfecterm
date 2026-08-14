@@ -52,6 +52,10 @@ type Parser struct {
 	// UTF-8 multi-byte handling
 	utf8Buf  []byte
 	utf8Need int
+
+	// savedModes holds DEC private mode values stashed by XTSAVE (CSI ? Pm s)
+	// for XTRESTORE (CSI ? Pm r).
+	savedModes map[int]bool
 }
 
 // NewParser creates a new ANSI parser for the given buffer
@@ -596,8 +600,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.executeModeSet(false)
 		}
 
-	case 's': // DECSLRM (CSI Pl ; Pr s) when DECLRMM is set, else SCP (Save Cursor)
-		if p.csiPrivate == 0 && p.buffer.IsLeftRightMarginMode() {
+	case 's': // XTSAVE (CSI ? Pm s) / DECSLRM (CSI Pl;Pr s under DECLRMM) / SCP
+		if p.csiPrivate == '?' {
+			p.executeXTSAVE()
+		} else if p.csiPrivate == 0 && p.buffer.IsLeftRightMarginMode() {
 			p.buffer.SetLeftRightMargins(p.getParam(0, 1), p.getParam(1, 0))
 		} else {
 			p.buffer.SaveCursor()
@@ -609,9 +615,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 	case 'n': // DSR - Device Status Report
 		p.executeDSR()
 
-	case 'r': // DECSTBM - Set Top and Bottom Margins
-		// Non-private only; CSI ? ... r is XTRESTORE (DEC private mode restore).
-		if p.csiPrivate == 0 {
+	case 'r': // DECSTBM (CSI Pt;Pb r) / XTRESTORE (CSI ? Pm r)
+		if p.csiPrivate == '?' {
+			p.executeXTRESTORE()
+		} else if p.csiPrivate == 0 {
 			p.buffer.SetScrollRegion(p.getParam(0, 1), p.getParam(1, 0))
 		}
 
@@ -731,8 +738,16 @@ func (p *Parser) decrqmStatus(mode int) int {
 	switch mode {
 	case 1: // DECCKM - Application cursor keys
 		return set(p.buffer.IsApplicationCursorKeys())
+	case 3: // DECCOLM - 132-column mode
+		return set(p.buffer.Get132ColumnMode())
+	case 5: // DECSCNM - reverse video (light mode)
+		return set(!p.buffer.IsDarkTheme())
 	case 6: // DECOM - Origin Mode
 		return set(p.buffer.IsOriginMode())
+	case 7: // DECAWM - Auto-wrap mode
+		return set(p.buffer.IsAutoWrapModeEnabled())
+	case 25: // DECTCEM - Cursor visibility
+		return set(p.buffer.IsCursorVisible())
 	case 69: // DECLRMM - Left/Right Margin Mode
 		return set(p.buffer.IsLeftRightMarginMode())
 	case 1004: // Focus reporting

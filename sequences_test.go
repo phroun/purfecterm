@@ -177,3 +177,42 @@ func TestKeyModes(t *testing.T) {
 		t.Fatal("RIS should reset key modes")
 	}
 }
+
+// XTSAVE/XTRESTORE stash and restore DEC private mode values.
+func TestSaveRestoreModes(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	p := NewParser(b)
+
+	// Save an ON mode, turn it off, restore -> on.
+	p.Parse([]byte("\x1b[?1h\x1b[?1s\x1b[?1l"))
+	if b.IsApplicationCursorKeys() {
+		t.Fatal("DECCKM should be off before restore")
+	}
+	p.Parse([]byte("\x1b[?1r"))
+	if !b.IsApplicationCursorKeys() {
+		t.Fatal("XTRESTORE should restore DECCKM on")
+	}
+
+	// Save an OFF mode, turn it on, restore -> off.
+	p.Parse([]byte("\x1b[?1004l\x1b[?1004s\x1b[?1004h\x1b[?1004r"))
+	if b.IsFocusReporting() {
+		t.Fatal("XTRESTORE should restore focus reporting off")
+	}
+}
+
+// DECRQM answers for the common modes with real state.
+func TestDECRQMReports(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	p, resp := respParser(b)
+	// Cursor visible by default -> set (1).
+	p.Parse([]byte("\x1b[?25$p"))
+	if *resp != "\x1b[?25;1$y" {
+		t.Fatalf("DECRQM ?25 = %q, want set", *resp)
+	}
+	*resp = ""
+	// Auto-wrap on by default -> set (1).
+	p.Parse([]byte("\x1b[?7$p"))
+	if *resp != "\x1b[?7;1$y" {
+		t.Fatalf("DECRQM ?7 = %q, want set", *resp)
+	}
+}
