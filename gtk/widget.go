@@ -1066,6 +1066,7 @@ func spriteCoordToPixels(coordinate float64, unitsPerCell int, cellSize int) flo
 // The decoder's RGBA is straight alpha in R,G,B,A order; ARGB32 is
 // premultiplied and, on a little-endian host, laid out B,G,R,A.
 func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	scale := w.deviceScale()
 	for _, im := range images {
 		img := im.Image
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
@@ -1107,10 +1108,19 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 		// The surface carries the DECODED pixels; the image may be asked to
 		// occupy a different size (see PlacedImage.DestSize). Scaling here puts
 		// the source surface into the scaled space, so it stretches to fit.
-		// Sixel asks for its own size, so this is the identity and the blit
-		// stays 1:1.
-		if destW, destH := im.DestSize(); destW != img.W || destH != img.H {
-			cr.Scale(float64(destW)/float64(img.W), float64(destH)/float64(img.H))
+		//
+		// DestSize is in DEVICE pixels, matching the cell size reported to the
+		// program; cairo draws in user units. Dividing by the scale factor is
+		// what makes a HiDPI image sharp: a device-resolution image is drawn
+		// into half the user-space box on a 2x display, so one source pixel
+		// covers exactly one device pixel rather than being doubled. At scale 1
+		// this is the identity, and a Sixel asking for its own size then leaves
+		// the blit 1:1.
+		destW, destH := im.DestSize()
+		dw := float64(destW) / scale
+		dh := float64(destH) / scale
+		if dw != float64(img.W) || dh != float64(img.H) {
+			cr.Scale(dw/float64(img.W), dh/float64(img.H))
 		}
 		cr.SetSourceSurface(surface, 0, 0)
 		cr.Paint()
@@ -1517,11 +1527,31 @@ func (w *Widget) updateFontMetrics() {
 	// image for a cell we do not have; and PlaceSixelImage reserves
 	// imageHeight/20 rows for an image that occupies imageHeight/charHeight of
 	// them, leaving a blank gap under every image.
+	//
+	// The reported size is in DEVICE pixels, which on a scaled display is not
+	// the cairo user units the glyphs are laid out in. That is the point: a
+	// program sizing an image from CSI 16 t should produce one at the display's
+	// real resolution, and renderImages scales it back down so a source pixel
+	// lands on a device pixel instead of being blown up by the scale factor.
 	if w.buffer != nil {
-		w.buffer.SetCellPixelSize(w.charWidth, w.charHeight)
+		scale := w.deviceScale()
+		w.buffer.SetCellPixelSize(int(float64(w.charWidth)*scale), int(float64(w.charHeight)*scale))
 	}
 
 	_ = descent // descent is included in height
+}
+
+// deviceScale is the widget's device-pixel scale factor: 2 on a HiDPI display
+// where one cairo user unit covers two device pixels, 1 everywhere else. Never
+// returns less than 1, so an unrealized widget cannot collapse a size to zero.
+func (w *Widget) deviceScale() float64 {
+	if w.drawingArea == nil {
+		return 1
+	}
+	if sf := w.drawingArea.GetScaleFactor(); sf > 1 {
+		return float64(sf)
+	}
+	return 1
 }
 
 // renderScreenSplits renders screen split regions using a scanline approach.

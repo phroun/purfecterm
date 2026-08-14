@@ -922,9 +922,29 @@ func (w *Widget) updateFontMetrics() {
 	// image for a cell we do not have; and PlaceSixelImage reserves
 	// imageHeight/20 rows for an image that occupies imageHeight/charHeight of
 	// them, leaving a blank gap under every image.
+	//
+	// The reported size is in DEVICE pixels, which on a scaled display is not
+	// the logical coordinates the glyphs are laid out in. That is the point: a
+	// program sizing an image from CSI 16 t should produce one at the display's
+	// real resolution, and renderImages scales it back down so a source pixel
+	// lands on a device pixel instead of being blown up by the ratio.
 	if w.buffer != nil {
-		w.buffer.SetCellPixelSize(w.charWidth, w.charHeight)
+		scale := w.deviceScale()
+		w.buffer.SetCellPixelSize(int(float64(w.charWidth)*scale), int(float64(w.charHeight)*scale))
 	}
+}
+
+// deviceScale is the widget's device pixel ratio: 2 on a HiDPI display where
+// one logical coordinate covers two device pixels, 1 everywhere else. Never
+// returns less than 1, so an unrealized widget cannot collapse a size to zero.
+func (w *Widget) deviceScale() float64 {
+	if w.widget == nil {
+		return 1
+	}
+	if r := w.widget.DevicePixelRatioF(); r > 1 {
+		return r
+	}
+	return 1
 }
 
 // renderCustomGlyph renders a custom glyph for a cell at the specified position
@@ -1121,6 +1141,7 @@ func spriteCoordToPixelsQt(coordinate float64, unitsPerCell int, cellSize int) f
 // miqt does not finalize C++ objects on its own, so the per-frame image is
 // deleted after the draw — without it every repaint leaks an image.
 func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	scale := w.deviceScale()
 	for _, im := range images {
 		img := im.Image
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
@@ -1146,10 +1167,19 @@ func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedI
 		pixelY := (im.Row + scrollOffsetY) * charHeight
 		// The QImage carries the DECODED pixels; the image may be asked to
 		// occupy a different size (see PlacedImage.DestSize), in which case it
-		// is drawn into a target rect and Qt scales. Sixel asks for its own
-		// size, so it takes the plain 1:1 point draw.
-		if destW, destH := im.DestSize(); destW != img.W || destH != img.H {
-			target := qt.NewQRect4(pixelX, pixelY, destW, destH)
+		// is drawn into a target rect and Qt scales.
+		//
+		// DestSize is in DEVICE pixels, matching the cell size reported to the
+		// program; QPainter draws in logical coordinates. Dividing by the ratio
+		// is what makes a HiDPI image sharp: a device-resolution image is drawn
+		// into half the logical box on a 2x display, so one source pixel covers
+		// exactly one device pixel rather than being doubled. At ratio 1 a Sixel
+		// asking for its own size takes the plain 1:1 point draw.
+		destW, destH := im.DestSize()
+		dw := int(float64(destW)/scale + 0.5)
+		dh := int(float64(destH)/scale + 0.5)
+		if dw != img.W || dh != img.H {
+			target := qt.NewQRect4(pixelX, pixelY, dw, dh)
 			painter.DrawImage6(target, qimg)
 		} else {
 			painter.DrawImage9(pixelX, pixelY, qimg)
