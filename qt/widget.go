@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/mappu/miqt/qt"
 	"github.com/phroun/purfecterm"
@@ -196,8 +197,8 @@ type Widget struct {
 	onResize func(cols, rows int)
 
 	// Context menu
-	contextMenu            *qt.QMenu
-	mouseReportingAction   *qt.QAction // Toggle for mouse reporting (nil if feature disabled)
+	contextMenu          *qt.QMenu
+	mouseReportingAction *qt.QAction // Toggle for mouse reporting (nil if feature disabled)
 
 	// Scrollbar update flag
 	scrollbarUpdating bool
@@ -1101,22 +1102,40 @@ func spriteCoordToPixelsQt(coordinate float64, unitsPerCell int, cellSize int) f
 
 // renderImages blits cell-anchored Sixel images onto the terminal.
 //
-// BEST EFFORT: the Qt toolkit does not build in this environment, so the miqt
-// image calls here are written against the expected API and should be verified
-// against your miqt version. The likely points of adjustment are the QImage
-// constructor from raw bytes (NewQImage5 here), the format enum
-// (QImage__Format_RGBA8888), and the DrawImage overload. The RGBA layout the
-// decoder produces matches Format_RGBA8888 directly (no premultiply needed).
+// Format_RGBA8888 is straight-alpha R,G,B,A — exactly the decoder's layout — so
+// the rows copy across untouched. They are copied into a QImage Qt allocated
+// rather than one wrapped around the decoder's slice: QImage's raw-data
+// constructor does not copy, and it would then hold a Go pointer for as long as
+// the image lives. Qt's own row pitch is BytesPerLine, which need not be W*4.
+//
+// miqt does not finalize C++ objects on its own, so the per-frame image is
+// deleted after the draw — without it every repaint leaks an image.
 func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
 	for _, im := range images {
 		img := im.Image
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
 			continue
 		}
-		qimg := qt.NewQImage5(img.RGBA, img.W, img.H, qt.QImage__Format_RGBA8888)
+		qimg := qt.NewQImage3(img.W, img.H, qt.QImage__Format_RGBA8888)
+		if qimg.IsNull() {
+			qimg.Delete() // allocation failed, but the wrapper object is still ours
+			continue
+		}
+		bytesPerLine := qimg.BytesPerLine()
+		bits := qimg.Bits()
+		if bits == nil || bytesPerLine < img.W*4 {
+			qimg.Delete()
+			continue
+		}
+		dst := unsafe.Slice(bits, bytesPerLine*img.H)
+		for y := 0; y < img.H; y++ {
+			copy(dst[y*bytesPerLine:y*bytesPerLine+img.W*4], img.RGBA[y*img.W*4:])
+		}
+
 		pixelX := im.Col*charWidth + terminalLeftPadding - horizOffsetX*charWidth
 		pixelY := (im.Row + scrollOffsetY) * charHeight
-		painter.DrawImage2(pixelX, pixelY, qimg)
+		painter.DrawImage9(pixelX, pixelY, qimg)
+		qimg.Delete()
 	}
 }
 

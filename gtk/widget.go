@@ -1054,14 +1054,17 @@ func spriteCoordToPixels(coordinate float64, unitsPerCell int, cellSize int) flo
 	return float64(wholeCells*cellSize) + remainderUnits*float64(cellSize)/float64(unitsPerCell)
 }
 
-// renderSprites renders a list of sprites at their positions
 // renderImages blits cell-anchored Sixel images onto the terminal.
 //
-// BEST EFFORT: the gtk toolkit does not build in this environment, so the cairo
-// image-surface calls here (CreateImageSurface / GetData / GetStride / MarkDirty
-// / Flush / SetSourceSurface) are written against the standard gotk3 cairo API
-// and should be verified against your gotk3 version. RGBA is converted to
-// cairo's premultiplied ARGB32 (BGRA byte order on little-endian).
+// The pixels go into cairo's OWN buffer rather than a surface wrapped around
+// the decoder's slice: cairo_image_surface_create_for_data keeps the pointer it
+// is given for the life of the surface, which a Go slice may not promise across
+// a cgo call. So the surface allocates, and we fill it through the pointer
+// cairo hands back — whose row pitch is the format's stride, NOT W*4 (cairo
+// aligns rows), which is why the stride comes from FormatStrideForWidth.
+//
+// The decoder's RGBA is straight alpha in R,G,B,A order; ARGB32 is
+// premultiplied and, on a little-endian host, laid out B,G,R,A.
 func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
 	for _, im := range images {
 		img := im.Image
@@ -1069,8 +1072,18 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 			continue
 		}
 		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, img.W, img.H)
-		data := surface.GetData()
-		stride := surface.GetStride()
+		if surface.Status() != cairo.STATUS_SUCCESS {
+			continue
+		}
+		stride := cairo.FormatStrideForWidth(cairo.FORMAT_ARGB32, img.W)
+		ptr := surface.GetData()
+		if ptr == nil || stride < img.W*4 {
+			continue
+		}
+		// Flush before touching the buffer directly, mark dirty after: cairo
+		// caches otherwise and the blit shows stale pixels.
+		surface.Flush()
+		data := unsafe.Slice((*byte)(ptr), stride*img.H)
 		for y := 0; y < img.H; y++ {
 			for x := 0; x < img.W; x++ {
 				si := (y*img.W + x) * 4
@@ -1079,7 +1092,6 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 				b := uint16(img.RGBA[si+2])
 				a := uint16(img.RGBA[si+3])
 				di := y*stride + x*4
-				// Premultiply and store as BGRA (ARGB32 little-endian).
 				data[di+0] = byte(b * a / 255)
 				data[di+1] = byte(g * a / 255)
 				data[di+2] = byte(r * a / 255)
@@ -1087,7 +1099,6 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 			}
 		}
 		surface.MarkDirty()
-		surface.Flush()
 
 		pixelX := float64(im.Col*charWidth) + float64(terminalLeftPadding) - float64(horizOffsetX*charWidth)
 		pixelY := float64((im.Row + scrollOffsetY) * charHeight)
@@ -1099,6 +1110,7 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 	}
 }
 
+// renderSprites renders a list of sprites at their positions
 func (w *Widget) renderSprites(cr *cairo.Context, sprites []*purfecterm.Sprite, charWidth, charHeight int, scheme purfecterm.ColorScheme, isDark bool, scrollOffsetY, horizOffsetX int) {
 	if len(sprites) == 0 {
 		return
