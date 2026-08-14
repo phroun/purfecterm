@@ -42,7 +42,11 @@ func (p *Parser) executeDCS() {
 	}
 	if params, data, ok := stripSixelIntro(s); ok {
 		bg := p.buffer.EffectiveDefaultBackground()
-		p.buffer.PlaceSixelImage(DecodeSixel(params, data, bg))
+		img := DecodeSixel(params, data, bg)
+		if img != nil {
+			img.Raw = []byte("\x1bP" + s + "\x1b\\")
+		}
+		p.buffer.PlaceSixelImage(img)
 	}
 }
 

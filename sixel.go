@@ -14,6 +14,9 @@ import "strings"
 type SixelImage struct {
 	W, H int
 	RGBA []byte
+	// Raw is the original DCS sequence (ESC P ... ST) that produced this image,
+	// for renderers that pass Sixel through to a capable host terminal.
+	Raw []byte
 }
 
 // At returns the RGBA of pixel (x,y), for tests. Returns (0,0,0,0) out of bounds.
