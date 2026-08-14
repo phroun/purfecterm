@@ -350,6 +350,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetInsertMode(false)
 		p.buffer.SetNewLineMode(false)
 		p.buffer.resetKeyModes()
+		p.buffer.resetKeyboardProtocol()
 		p.buffer.resetOSCColors()
 		p.buffer.SetProtectedAttr(false)
 		p.state = stateGround
@@ -642,8 +643,15 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.buffer.SaveCursor()
 		}
 
-	case 'u': // RCP - Restore Cursor Position
-		p.buffer.RestoreCursor()
+	case 'u': // Kitty keyboard protocol (CSI ?/>/</= ... u), else RCP
+		// The keyboard-protocol family shares its final byte with restore
+		// cursor position, and is told apart by its private marker. Falling
+		// through to RCP on a query — as this did before the protocol was
+		// implemented — silently MOVED THE CURSOR every time an application
+		// asked whether the terminal supported extended keys.
+		if !p.executeKeyboardProtocol() {
+			p.buffer.RestoreCursor()
+		}
 
 	case 'n': // DSR - Device Status Report
 		p.executeDSR()

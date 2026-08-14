@@ -141,6 +141,13 @@ type Buffer struct {
 	pointerPixelWidth  int
 	pointerPixelHeight int
 
+	// Kitty keyboard protocol enhancement flags, kept per screen so a
+	// full-screen application that pushes flags on entry and pops them on exit
+	// cannot leave the shell it suspends back to receiving key events it
+	// cannot read.
+	mainKeyboard keyboardState
+	altKeyboard  keyboardState
+
 	// Transmitted kitty graphics images, held independently of their
 	// placements so one can be shown, cleared and shown again without a
 	// retransmission. Nil until the protocol is first used.

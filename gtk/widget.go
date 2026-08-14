@@ -3069,6 +3069,18 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		return false
 	}
 
+	// The kitty keyboard protocol takes precedence when an application has
+	// negotiated it. This is gated on the flags being non-zero, so an
+	// application that never asked sees byte-for-byte what it always did and
+	// the legacy switch below stays the only path in play.
+	if data := w.encodeKittyKey(keyval,
+		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, hasSuper,
+			state&uint(gdk.LOCK_MASK) != 0, state&uint(gdk.MOD2_MASK) != 0),
+		purfecterm.KeyPress); data != nil {
+		onInput(data)
+		return true
+	}
+
 	// Calculate xterm-style modifier parameter
 	// mod = 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0) + (meta?8:0)
 	mod := 1
