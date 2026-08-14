@@ -242,3 +242,58 @@ func TestPlacedImageDestSizeFallsBackToDecoded(t *testing.T) {
 		t.Errorf("DestSize on a nil image = %dx%d, want 0x0", w, h)
 	}
 }
+
+// Shrinking the window pushes lines into scrollback, which slides the text up
+// exactly as a scroll does — and anchored images have to travel with it. The
+// resize path does not run through scrollRegionUp, so it needs its own shift;
+// without one the image stays put while the text slides out from under it.
+func TestSixelImageFollowsTextOnShrink(t *testing.T) {
+	const rows = 12
+	b := NewBuffer(20, rows, 100)
+	b.SetCellPixelSize(10, 20)
+	b.SetSixelScrolling(false)
+
+	// Put content on every row so the shrink has to push lines off.
+	for y := 0; y < rows; y++ {
+		b.SetCursor(0, y)
+		b.WriteChar('x')
+	}
+	b.SetCursor(0, 8)
+	b.PlaceSixelImage(&SixelImage{W: 10, H: 40, RGBA: make([]byte, 10*40*4)}) // 2 cells
+
+	if imgs := b.GetImages(); len(imgs) != 1 || imgs[0].Row != 8 {
+		t.Fatalf("setup: %#v", b.GetImages())
+	}
+
+	// Last content row is 11; shrinking to 6 rows pushes 11-6+1 = 6 lines off.
+	b.Resize(20, 6)
+
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("image dropped by the shrink; it should have moved up to row 2")
+	}
+	if imgs[0].Row != 2 {
+		t.Errorf("row = %d, want 2: the image did not follow the text into scrollback", imgs[0].Row)
+	}
+}
+
+// An image that the shrink pushes entirely off the top is dropped, not left at
+// a negative row forever.
+func TestSixelImageDroppedWhenShrinkPushesItOff(t *testing.T) {
+	const rows = 12
+	b := NewBuffer(20, rows, 100)
+	b.SetCellPixelSize(10, 20)
+	b.SetSixelScrolling(false)
+
+	for y := 0; y < rows; y++ {
+		b.SetCursor(0, y)
+		b.WriteChar('x')
+	}
+	b.SetCursor(0, 1)
+	b.PlaceSixelImage(&SixelImage{W: 10, H: 40, RGBA: make([]byte, 10*40*4)}) // rows 1-2
+
+	b.Resize(20, 6) // pushes 6 lines: rows 1-2 land at -5..-4
+	if imgs := b.GetImages(); len(imgs) != 0 {
+		t.Errorf("image survived at row %d; the shrink pushed it off the top", imgs[0].Row)
+	}
+}

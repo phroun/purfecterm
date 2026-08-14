@@ -646,6 +646,14 @@ func (b *Buffer) adjustScreenToRows(targetRows int) {
 			b.lineInfos = b.lineInfos[1:]
 		}
 
+		// Shrinking the window moves the text up exactly as a scroll does, so
+		// anchored images have to come with it. This is the one off-screen path
+		// that does not run through scrollRegionUp, so without this an image
+		// stays where it was while the text slides out from under it.
+		if linesToPush > 0 {
+			b.shiftImagesLocked(-linesToPush, 0, currentRows-1)
+		}
+
 		// Adjust cursor position to stay with content
 		if linesToPush > 0 {
 			newY := b.cursorY - linesToPush
