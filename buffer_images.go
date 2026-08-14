@@ -102,13 +102,19 @@ func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 // shiftImagesLocked adjusts image anchors when rows [top,bottom] scroll by delta
 // (-1 up, +1 down), dropping images that scroll entirely off the top. Caller
 // holds the lock.
+//
+// An image moves when its EXTENT meets the region, not merely its anchor. Once
+// a tall image has scrolled partway off the top its anchor sits above the
+// region while its lower rows are still on screen and still scrolling; testing
+// the anchor alone froze it at row top-1, where it stuck to the top edge
+// forever and — never reaching the drop test below — never scrolled off.
 func (b *Buffer) shiftImagesLocked(delta, top, bottom int) {
 	if len(b.images) == 0 {
 		return
 	}
 	kept := b.images[:0]
 	for _, im := range b.images {
-		if im.Row >= top && im.Row <= bottom {
+		if im.Row <= bottom && im.Row+im.CellsHigh > top {
 			im.Row += delta
 		}
 		if im.Row+im.CellsHigh <= 0 {
