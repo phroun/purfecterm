@@ -3,7 +3,7 @@ package purfecterm
 // Cell-anchored bitmap images (from Sixel). An image is anchored at a screen
 // cell (Row, Col) and occupies CellsWide x CellsHigh cells; it scrolls with the
 // text and is dropped when it scrolls off the top or the screen is cleared. A
-// renderer blits Image.RGBA at the cell's pixel position.
+// renderer blits Image.RGBA at the cell's pixel position, scaled to DestSize.
 
 // PlacedImage is a bitmap anchored to a screen cell.
 type PlacedImage struct {
@@ -12,6 +12,33 @@ type PlacedImage struct {
 	CellsWide int
 	CellsHigh int
 	Image     *SixelImage
+
+	// DestW/DestH are the size in terminal pixels the image is to be DRAWN at,
+	// which is not always the size it was decoded at. Sixel carries its own
+	// pixels and asks for none, so it sets these to the decoded size and draws
+	// 1:1. A protocol that sizes an image in cells or in a percentage of the
+	// session — iTerm2's inline images does both — resolves that to pixels here,
+	// and the renderer scales to it. CellsWide/CellsHigh are derived from this,
+	// not from the decoded size. Zero means "the decoded size"; read them
+	// through DestSize rather than directly.
+	DestW, DestH int
+}
+
+// DestSize returns the size in terminal pixels this image should be drawn at,
+// falling back to the decoded image's own size when unset. Renderers scale the
+// decoded pixels to this; when it equals the decoded size the blit is 1:1.
+func (p *PlacedImage) DestSize() (w, h int) {
+	if p == nil || p.Image == nil {
+		return 0, 0
+	}
+	w, h = p.DestW, p.DestH
+	if w <= 0 {
+		w = p.Image.W
+	}
+	if h <= 0 {
+		h = p.Image.H
+	}
+	return w, h
 }
 
 // GetImages returns the currently placed images (renderers blit these). The
@@ -70,8 +97,10 @@ func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 	if ch <= 0 {
 		ch = 20
 	}
-	cellsW := (img.W + cw - 1) / cw
-	cellsH := (img.H + ch - 1) / ch
+	// Sixel is drawn at the size it decoded to: its pixels are the image.
+	destW, destH := img.W, img.H
+	cellsW := (destW + cw - 1) / cw
+	cellsH := (destH + ch - 1) / ch
 
 	b.nextImageID++
 	pi := &PlacedImage{
@@ -81,6 +110,8 @@ func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 		CellsWide: cellsW,
 		CellsHigh: cellsH,
 		Image:     img,
+		DestW:     destW,
+		DestH:     destH,
 	}
 	b.images = append(b.images, pi)
 

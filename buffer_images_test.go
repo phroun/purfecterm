@@ -201,3 +201,44 @@ func TestSixelImageIgnoresUnrelatedRegionScroll(t *testing.T) {
 		t.Errorf("row = %d, want 0: a region below the image must not move it", imgs[0].Row)
 	}
 }
+
+// Sixel carries its own pixels and asks for no resizing, so a placed Sixel
+// image reports the decoded size as its destination and the renderers stay on
+// their 1:1 path.
+func TestSixelImageDrawsAtItsDecodedSize(t *testing.T) {
+	b := NewBuffer(40, 30, 200)
+	b.SetCellPixelSize(10, 20)
+	b.SetCursor(0, 0)
+	b.PlaceSixelImage(&SixelImage{W: 35, H: 50, RGBA: make([]byte, 35*50*4)})
+
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("placed %d images, want 1", len(imgs))
+	}
+	w, h := imgs[0].DestSize()
+	if w != 35 || h != 50 {
+		t.Errorf("DestSize = %dx%d, want the decoded 35x50 (Sixel must not be rescaled)", w, h)
+	}
+	// The cell box rounds UP around that size; it must not feed back into the
+	// draw size, or a 50px image would stretch to fill 3 cells (60px).
+	if imgs[0].CellsWide != 4 || imgs[0].CellsHigh != 3 {
+		t.Errorf("cells = %dx%d, want 4x3", imgs[0].CellsWide, imgs[0].CellsHigh)
+	}
+}
+
+// DestSize falls back to the decoded size, so an image built without the fields
+// set (or by code predating them) still draws 1:1 rather than vanishing.
+func TestPlacedImageDestSizeFallsBackToDecoded(t *testing.T) {
+	pi := &PlacedImage{Image: &SixelImage{W: 12, H: 7}}
+	if w, h := pi.DestSize(); w != 12 || h != 7 {
+		t.Errorf("DestSize = %dx%d, want 12x7", w, h)
+	}
+	pi.DestW, pi.DestH = 24, 14
+	if w, h := pi.DestSize(); w != 24 || h != 14 {
+		t.Errorf("DestSize = %dx%d, want the explicit 24x14", w, h)
+	}
+	// A nil image has no size to fall back to.
+	if w, h := (&PlacedImage{}).DestSize(); w != 0 || h != 0 {
+		t.Errorf("DestSize on a nil image = %dx%d, want 0x0", w, h)
+	}
+}

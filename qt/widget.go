@@ -1144,7 +1144,16 @@ func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedI
 
 		pixelX := im.Col*charWidth + terminalLeftPadding - horizOffsetX*charWidth
 		pixelY := (im.Row + scrollOffsetY) * charHeight
-		painter.DrawImage9(pixelX, pixelY, qimg)
+		// The QImage carries the DECODED pixels; the image may be asked to
+		// occupy a different size (see PlacedImage.DestSize), in which case it
+		// is drawn into a target rect and Qt scales. Sixel asks for its own
+		// size, so it takes the plain 1:1 point draw.
+		if destW, destH := im.DestSize(); destW != img.W || destH != img.H {
+			target := qt.NewQRect4(pixelX, pixelY, destW, destH)
+			painter.DrawImage6(target, qimg)
+		} else {
+			painter.DrawImage9(pixelX, pixelY, qimg)
+		}
 		qimg.Delete()
 	}
 }

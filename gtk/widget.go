@@ -1104,6 +1104,14 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 		pixelY := float64((im.Row + scrollOffsetY) * charHeight)
 		cr.Save()
 		cr.Translate(pixelX, pixelY)
+		// The surface carries the DECODED pixels; the image may be asked to
+		// occupy a different size (see PlacedImage.DestSize). Scaling here puts
+		// the source surface into the scaled space, so it stretches to fit.
+		// Sixel asks for its own size, so this is the identity and the blit
+		// stays 1:1.
+		if destW, destH := im.DestSize(); destW != img.W || destH != img.H {
+			cr.Scale(float64(destW)/float64(img.W), float64(destH)/float64(img.H))
+		}
 		cr.SetSourceSurface(surface, 0, 0)
 		cr.Paint()
 		cr.Restore()
