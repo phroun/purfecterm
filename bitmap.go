@@ -20,6 +20,14 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+
+	// TIFF is not in the standard library's registry, but it is not exotic
+	// here: chafa emits TIFF, not PNG, for its iTerm2 output, so a terminal
+	// that only registered the standard three silently dropped every image
+	// from `chafa -f iterm`. Registered for real rather than left to the
+	// embedding program, since a user running chafa is not in a position to
+	// know they need to link a decoder in.
+	_ "golang.org/x/image/tiff"
 )
 
 // Bitmap is a decoded image in the form every renderer here consumes:

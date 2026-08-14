@@ -226,6 +226,19 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 	w.buffer = purfecterm.NewBuffer(cols, rows, scrollbackSize)
 	w.parser = purfecterm.NewParser(w.buffer)
 
+	// Answer terminal queries. The parser generates replies — CSI 14 t / 16 t /
+	// 18 t sizes, device attributes, cursor position, DECRQSS — but they are
+	// only ever DELIVERED if a sink is wired, and without one every query was
+	// answered into the void. A reply is input to the child process, exactly
+	// like a keystroke, so it goes out the same way. Read unlocked, as every
+	// other onInput call site here does: the sink runs inside Parse, and taking
+	// the widget lock here would deadlock anything that parses while holding it.
+	w.parser.SetResponseSink(func(data []byte) {
+		if fn := w.onInput; fn != nil {
+			fn(data)
+		}
+	})
+
 	// Initialize terminal capabilities (auto-updated on resize)
 	w.termCaps = &purfecterm.TerminalCapabilities{
 		TermType:      "gui-console",

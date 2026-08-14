@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"image/png"
 	"testing"
+
+	"golang.org/x/image/tiff"
 )
 
 // pngBytes encodes a w x h image with one semi-transparent pixel at (0,0), so a
@@ -226,5 +228,72 @@ func TestInlineImageAcceptsSTTerminator(t *testing.T) {
 	p.Parse([]byte(seq))
 	if imgs := b.GetImages(); len(imgs) != 1 {
 		t.Errorf("placed %d images for an ST-terminated sequence, want 1", len(imgs))
+	}
+}
+
+// chafa emits TIFF — not PNG — for its iTerm2 output, so an image arriving over
+// OSC 1337 must survive a format the standard library does not register. This
+// is the exact shape of a real `chafa -f iterm` command, down to the argument
+// order, the preserveAspectRatio=0, and the BEL terminator.
+func TestInlineImageAcceptsChafaTIFF(t *testing.T) {
+	var buf bytes.Buffer
+	src := image.NewNRGBA(image.Rect(0, 0, 32, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 32; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{R: 255, A: 255})
+		}
+	}
+	if err := tiff.Encode(&buf, src, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	b, p := newImageTestBuffer() // 10x20 cells
+	p.Parse([]byte("\x1b]1337;File=inline=1;width=4;height=2;preserveAspectRatio=0:" +
+		base64.StdEncoding.EncodeToString(buf.Bytes()) + "\x07"))
+
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("placed %d images for a TIFF payload, want 1", len(imgs))
+	}
+	if imgs[0].Image.W != 32 || imgs[0].Image.H != 16 {
+		t.Errorf("decoded %dx%d, want 32x16", imgs[0].Image.W, imgs[0].Image.H)
+	}
+	if w, h := imgs[0].DestSize(); w != 40 || h != 40 {
+		t.Errorf("DestSize = %dx%d, want 40x40 (4 cols x 10px, 2 rows x 20px)", w, h)
+	}
+	if imgs[0].CellsWide != 4 || imgs[0].CellsHigh != 2 {
+		t.Errorf("cells = %dx%d, want 4x2", imgs[0].CellsWide, imgs[0].CellsHigh)
+	}
+}
+
+// The decoder reports the format that claimed the bytes, and TIFF is among the
+// registered ones.
+func TestDecodeImageHandlesRegisteredFormats(t *testing.T) {
+	var tif bytes.Buffer
+	if err := tiff.Encode(&tif, image.NewNRGBA(image.Rect(0, 0, 4, 4)), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"png", pngBytes(t, 4, 4), "png"},
+		{"tiff", tif.Bytes(), "tiff"},
+	} {
+		bm, format, err := DecodeImage(c.data)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if format != c.want {
+			t.Errorf("%s: format = %q, want %q", c.name, format, c.want)
+		}
+		if bm.W != 4 || bm.H != 4 {
+			t.Errorf("%s: decoded %dx%d, want 4x4", c.name, bm.W, bm.H)
+		}
+	}
+	if _, _, err := DecodeImage([]byte("not an image")); err == nil {
+		t.Error("garbage decoded without an error")
 	}
 }
