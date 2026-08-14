@@ -265,6 +265,23 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	// Ensure line is long enough for the cursor position
 	b.ensureLineLength(b.cursorY, b.cursorX+1)
 
+	// Remember the last printed graphic character for REP (CSI b).
+	b.lastPrintedChar = ch
+
+	// Insert/Replace Mode (IRM): make room by shifting the rest of the line
+	// right by one within the effective right bound before overwriting.
+	if b.insertMode {
+		right := b.EffectiveCols() - 1
+		if _, mr, active := b.lrMarginsLocked(); active {
+			right = mr
+		}
+		b.ensureLineLength(b.cursorY, right+1)
+		line := b.screen[b.cursorY]
+		for c := right; c > b.cursorX; c-- {
+			line[c] = line[c-1]
+		}
+	}
+
 	fg := b.currentFg
 	bg := b.currentBg
 	if b.currentReverse {
@@ -423,6 +440,14 @@ func (b *Buffer) LineFeed() {
 		b.flushLiveWriteRun()
 	}
 	b.advanceLineInternal()
+	if b.newLineMode {
+		// LNM (mode 20): a line feed also performs a carriage return.
+		if left, _, active := b.lrMarginsLocked(); active && b.cursorX >= left {
+			b.cursorX = left
+		} else {
+			b.cursorX = 0
+		}
+	}
 	if b.liveEnabled() {
 		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}

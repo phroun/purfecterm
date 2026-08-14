@@ -271,7 +271,7 @@ func (p *Parser) handleGround(b byte) {
 	case 0x08: // BS - backspace
 		p.buffer.Backspace()
 	case 0x09: // HT - horizontal tab
-		p.buffer.TabVisual()
+		p.buffer.TabForward(1)
 	case 0x0A: // LF - line feed
 		p.buffer.LineFeed()
 	case 0x0B, 0x0C: // VT, FF - treated as line feed
@@ -304,6 +304,9 @@ func (p *Parser) handleEscape(b byte) {
 		p.state = stateCharset
 	case '#': // DEC line attribute commands (DECDHL, DECDWL, DECSWL, DECALN)
 		p.state = stateDECLineAttr
+	case 'H': // HTS - Horizontal Tab Set (set a tab stop at the cursor)
+		p.buffer.SetTabStop()
+		p.state = stateGround
 	case '7': // DECSC - Save Cursor
 		p.buffer.SaveCursor()
 		p.state = stateGround
@@ -316,6 +319,9 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetCursor(0, 0)
 		p.buffer.ResetAttributes()
 		p.buffer.ResetScrollRegion()
+		p.buffer.resetTabStops()
+		p.buffer.SetInsertMode(false)
+		p.buffer.SetNewLineMode(false)
 		p.state = stateGround
 	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
 		p.buffer.LineFeed()
@@ -547,17 +553,44 @@ func (p *Parser) executeCSI(finalByte byte) {
 		x, _ := p.buffer.GetCursor()
 		p.buffer.SetCursor(x, y)
 
+	case 'e': // VPR - Vertical Position Relative (down n rows)
+		p.buffer.MoveCursorDown(p.getParam(0, 1))
+
+	case '`': // HPA - Horizontal Position Absolute (visual column)
+		x := p.getParam(0, 1) - 1
+		_, y := p.buffer.GetCursor()
+		p.buffer.SetCursorVisual(x, y)
+
+	case 'a': // HPR - Horizontal Position Relative (forward n columns)
+		p.buffer.MoveCursorForwardVisual(p.getParam(0, 1))
+
+	case 'b': // REP - Repeat the last printed character n times
+		p.buffer.RepeatLastChar(p.getParam(0, 1))
+
+	case 'g': // TBC - Tab Clear (0 = at cursor, 3 = all)
+		p.buffer.ClearTabStop(p.getParam(0, 0))
+
+	case 'I': // CHT - Cursor Forward Tabulation (n tab stops)
+		p.buffer.TabForward(p.getParam(0, 1))
+
+	case 'Z': // CBT - Cursor Backward Tabulation (n tab stops)
+		p.buffer.TabBackward(p.getParam(0, 1))
+
 	case 'm': // SGR - Select Graphic Rendition
 		p.executeSGR()
 
 	case 'h': // SM - Set Mode
 		if p.csiPrivate == '?' {
 			p.executePrivateModeSet(true)
+		} else if p.csiPrivate == 0 {
+			p.executeModeSet(true)
 		}
 
 	case 'l': // RM - Reset Mode
 		if p.csiPrivate == '?' {
 			p.executePrivateModeSet(false)
+		} else if p.csiPrivate == 0 {
+			p.executeModeSet(false)
 		}
 
 	case 's': // DECSLRM (CSI Pl ; Pr s) when DECLRMM is set, else SCP (Save Cursor)
@@ -571,7 +604,7 @@ func (p *Parser) executeCSI(finalByte byte) {
 		p.buffer.RestoreCursor()
 
 	case 'n': // DSR - Device Status Report
-		// Would need to send response - ignore for now
+		p.executeDSR()
 
 	case 'r': // DECSTBM - Set Top and Bottom Margins
 		// Non-private only; CSI ? ... r is XTRESTORE (DEC private mode restore).
@@ -580,7 +613,7 @@ func (p *Parser) executeCSI(finalByte byte) {
 		}
 
 	case 'c': // DA - Device Attributes
-		// Would need to send response - ignore
+		p.executeDA()
 
 	case 't': // Window manipulation
 		p.executeWindowManipulation()
@@ -593,6 +626,7 @@ func (p *Parser) executeCSI(finalByte byte) {
 			// mode, reset attributes, and home the cursor (screen not cleared).
 			p.buffer.ResetScrollRegion()
 			p.buffer.ResetAttributes()
+			p.buffer.SetInsertMode(false)
 			p.buffer.SetCursor(0, 0)
 		}
 
@@ -966,6 +1000,18 @@ func (p *Parser) executeSGR() {
 			p.buffer.ResetBGP()
 		}
 		i++
+	}
+}
+
+// executeModeSet handles the non-private ANSI modes (SM/RM without '?').
+func (p *Parser) executeModeSet(set bool) {
+	for _, param := range p.csiParams {
+		switch param {
+		case 4: // IRM - Insert/Replace Mode
+			p.buffer.SetInsertMode(set)
+		case 20: // LNM - Line Feed/New Line Mode
+			p.buffer.SetNewLineMode(set)
+		}
 	}
 }
 

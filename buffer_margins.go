@@ -247,6 +247,24 @@ func (b *Buffer) reverseLineInternal() {
 	}
 }
 
+// CursorReportPosition returns the 1-based cursor position for CPR/DSR reports:
+// the column is VISUAL (the wcwidth contract), and under origin mode the row is
+// relative to the top margin.
+func (b *Buffer) CursorReportPosition() (row, col int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	col = b.logicalToVisualLocked(b.cursorY, b.cursorX) + 1
+	row = b.cursorY + 1
+	if b.originMode {
+		top, _ := b.scrollRegionLocked()
+		row = b.cursorY - top + 1
+	}
+	if row < 1 {
+		row = 1
+	}
+	return row, col
+}
+
 // ReverseIndex implements RI (ESC M): move up one line within the region,
 // reverse-scrolling at the top margin.
 func (b *Buffer) ReverseIndex() {

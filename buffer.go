@@ -214,6 +214,12 @@ type Buffer struct {
 	hasLRMargins        bool
 	leftRightMarginMode bool
 
+	// Standard ANSI modes and tab stops.
+	insertMode      bool         // IRM (mode 4): printed chars insert (shift right)
+	newLineMode     bool         // LNM (mode 20): output LF also does CR
+	lastPrintedChar rune         // for REP (CSI b)
+	tabStops        map[int]bool // horizontal tab stops (visual columns)
+
 	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
 	// fields hold the alternate screen and mainStash holds the primary screen's
 	// context (content, cursor, margins, and its own scrollback), restored on
