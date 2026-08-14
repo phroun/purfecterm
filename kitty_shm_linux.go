@@ -1,9 +1,11 @@
+//go:build !darwin
+
 package purfecterm
 
-// Shared-memory transmission (t=s) reads a POSIX shared memory object by name.
-// On Linux and the BSDs those objects appear under /dev/shm, so the name maps
-// to a path; a platform without that mapping falls back to failing the read,
-// which the protocol reports as ENOENT.
+// Shared-memory transmission (t=s) on the platforms where a POSIX shared memory
+// object is reachable through the filesystem: Linux and the BSDs surface them
+// under /dev/shm, so the object name maps to a path and an ordinary read works.
+// macOS does not, and has its own file — see kitty_shm_darwin.go.
 
 import (
 	"os"
