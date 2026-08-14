@@ -2358,6 +2358,26 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 		hasCtrl, hasMeta = hasMeta, hasCtrl
 	}
 
+	// The kitty keyboard protocol takes precedence when an application has
+	// negotiated it. This is gated on the flags being non-zero, so an
+	// application that never asked sees byte-for-byte what it always did and
+	// the legacy switch below stays the only path in play.
+	eventType := purfecterm.KeyPress
+	if event.IsAutoRepeat() {
+		eventType = purfecterm.KeyRepeat
+	}
+	// Caps Lock and Num Lock are deliberately reported as unset: Qt's
+	// KeyboardModifiers does not carry lock state (KeypadModifier says the key
+	// came FROM the numpad, which is a different question), and inventing a bit
+	// would corrupt the modifier value on every keystroke rather than leave one
+	// rarely-used report absent.
+	if data := w.encodeKittyKey(qt.Key(key), event.Text(),
+		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, false, false),
+		eventType); data != nil {
+		onInput(data)
+		return
+	}
+
 	var data []byte
 	hasModifiers := hasShift || hasCtrl || hasAlt || hasMeta
 
