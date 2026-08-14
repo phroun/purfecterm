@@ -21,6 +21,8 @@ const (
 	stateDECLineAttr             // After ESC # (waiting for line attribute command)
 	stateDCS                     // After ESC P (collecting a DCS string)
 	stateDCSEsc                  // ESC seen inside a DCS string (expecting the \ of ST)
+	stateAPC                     // After ESC _ (collecting an APC string)
+	stateAPCEsc                  // ESC seen inside an APC string (expecting the \ of ST)
 )
 
 // SGRParam represents an SGR parameter with optional subparameters
@@ -43,8 +45,10 @@ type Parser struct {
 	csiBuf          strings.Builder
 
 	// OSC accumulator
-	oscCmd int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
-	oscBuf strings.Builder // OSC command arguments
+	oscCmd    int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
+	oscBuf    strings.Builder // OSC command arguments
+	apcBuf    strings.Builder // APC string body (kitty graphics)
+	kittyXfer *kittyTransfer  // in-flight chunked kitty graphics transmission
 
 	// DCS accumulator (ESC P ... ST)
 	dcsBuf strings.Builder
@@ -258,6 +262,10 @@ func (p *Parser) processByte(b byte) {
 		p.handleDCS(b)
 	case stateDCSEsc:
 		p.handleDCSEsc(b)
+	case stateAPC:
+		p.handleAPC(b)
+	case stateAPCEsc:
+		p.handleAPCEsc(b)
 	}
 }
 
@@ -316,6 +324,9 @@ func (p *Parser) handleEscape(b byte) {
 	case 'P': // DCS - Device Control String (ESC P ... ST)
 		p.state = stateDCS
 		p.dcsBuf.Reset()
+	case '_': // APC - Application Program Command (ESC _ ... ST), kitty graphics
+		p.state = stateAPC
+		p.apcBuf.Reset()
 	case '(', ')': // Character set designation
 		p.state = stateCharset
 	case '#': // DEC line attribute commands (DECDHL, DECDWL, DECSWL, DECALN)
@@ -1698,5 +1709,45 @@ func (p *Parser) executeOSCScriptFont(args string) {
 		if len(parts) >= 3 {
 			p.buffer.SetScriptFont(parts[1], parts[2])
 		}
+	}
+}
+
+// handleAPC collects an Application Program Command string (ESC _ ... ST).
+// The kitty graphics protocol is the only APC this terminal implements; any
+// other is collected and discarded, which is what an APC a terminal does not
+// understand is for.
+func (p *Parser) handleAPC(b byte) {
+	if b == 0x07 { // BEL also terminates, as it does for OSC
+		p.executeAPC()
+		p.state = stateGround
+		return
+	}
+	if b == 0x1B { // ESC begins ST (ESC \); wait for the second byte
+		p.state = stateAPCEsc
+		return
+	}
+	p.apcBuf.WriteByte(b)
+}
+
+// handleAPCEsc resolves the byte after an ESC inside an APC string. '\'
+// completes ST and executes; anything else means the APC was interrupted, so
+// abandon it and reprocess the byte from the escape state it actually started.
+func (p *Parser) handleAPCEsc(b byte) {
+	if b == '\\' {
+		p.executeAPC()
+		p.state = stateGround
+		return
+	}
+	p.apcBuf.Reset()
+	p.state = stateEscape
+	p.handleEscape(b)
+}
+
+// executeAPC dispatches a completed APC string.
+func (p *Parser) executeAPC() {
+	s := p.apcBuf.String()
+	p.apcBuf.Reset()
+	if len(s) > 0 && s[0] == 'G' {
+		p.executeKittyGraphics(s[1:])
 	}
 }

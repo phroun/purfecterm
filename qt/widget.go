@@ -1147,20 +1147,27 @@ func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedI
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
 			continue
 		}
-		qimg := qt.NewQImage3(img.W, img.H, qt.QImage__Format_RGBA8888)
+		// A placement may show only part of its image (the kitty protocol's
+		// x/y/w/h crop), so only the source rectangle is copied across.
+		sx, sy, sw, sh := im.SourceRect()
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+		qimg := qt.NewQImage3(sw, sh, qt.QImage__Format_RGBA8888)
 		if qimg.IsNull() {
 			qimg.Delete() // allocation failed, but the wrapper object is still ours
 			continue
 		}
 		bytesPerLine := qimg.BytesPerLine()
 		bits := qimg.Bits()
-		if bits == nil || bytesPerLine < img.W*4 {
+		if bits == nil || bytesPerLine < sw*4 {
 			qimg.Delete()
 			continue
 		}
-		dst := unsafe.Slice(bits, bytesPerLine*img.H)
-		for y := 0; y < img.H; y++ {
-			copy(dst[y*bytesPerLine:y*bytesPerLine+img.W*4], img.RGBA[y*img.W*4:])
+		dst := unsafe.Slice(bits, bytesPerLine*sh)
+		for y := 0; y < sh; y++ {
+			src := ((y+sy)*img.W + sx) * 4
+			copy(dst[y*bytesPerLine:y*bytesPerLine+sw*4], img.RGBA[src:])
 		}
 
 		pixelX := im.Col*charWidth + terminalLeftPadding - horizOffsetX*charWidth
@@ -1178,7 +1185,7 @@ func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedI
 		destW, destH := im.DestSize()
 		dw := int(float64(destW)/scale + 0.5)
 		dh := int(float64(destH)/scale + 0.5)
-		if dw != img.W || dh != img.H {
+		if dw != sw || dh != sh {
 			target := qt.NewQRect4(pixelX, pixelY, dw, dh)
 			painter.DrawImage6(target, qimg)
 		} else {
@@ -1695,6 +1702,11 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 	// Render behind sprites (visible where text has default background)
 	w.renderSprites(painter, behindSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
+	// Images at a NEGATIVE z-index go under the text, which is what makes
+	// text-over-image work; the rest are drawn after the glyphs below.
+	imagesBelow, imagesAbove := w.buffer.GetImagesByZ()
+	w.renderImages(painter, imagesBelow, charWidth, charHeight, scrollOffset, horizOffset)
+
 	// Set up font
 	font := qt.NewQFont6(fontFamily, fontSize)
 	font.SetFixedPitch(true)
@@ -2166,7 +2178,7 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 	w.renderSprites(painter, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
 	// Render cell-anchored bitmap images (Sixel)
-	w.renderImages(painter, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
+	w.renderImages(painter, imagesAbove, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits use logical scanline numbers relative to the scroll boundary

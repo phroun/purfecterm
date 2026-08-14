@@ -120,8 +120,8 @@ type Buffer struct {
 	bracketedPasteMode bool
 
 	// Mouse tracking modes (set via DEC Private Mode sequences)
-	mouseTrackingMode  int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
-	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
+	mouseTrackingMode int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
+	mouseEncodingMode int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
 
 	// Cell size in device pixels: the REAL geometry a renderer draws into.
 	// Reported by CSI 14 t / CSI 16 t and used to size and place images. 0 =
@@ -141,18 +141,23 @@ type Buffer struct {
 	pointerPixelWidth  int
 	pointerPixelHeight int
 
-	currentFg        Color
-	currentBg            Color
-	currentBold          bool
-	currentItalic        bool
-	currentUnderline     bool
-	currentUnderlineStyle UnderlineStyle
-	currentUnderlineColor Color
+	// Transmitted kitty graphics images, held independently of their
+	// placements so one can be shown, cleared and shown again without a
+	// retransmission. Nil until the protocol is first used.
+	kittyImages *kittyImageStore
+
+	currentFg                Color
+	currentBg                Color
+	currentBold              bool
+	currentItalic            bool
+	currentUnderline         bool
+	currentUnderlineStyle    UnderlineStyle
+	currentUnderlineColor    Color
 	currentHasUnderlineColor bool
-	currentReverse       bool
-	currentBlink         bool
-	currentStrikethrough bool
-	currentFlexWidth     bool // Current attribute for East Asian Width mode
+	currentReverse           bool
+	currentBlink             bool
+	currentStrikethrough     bool
+	currentFlexWidth         bool // Current attribute for East Asian Width mode
 
 	// Flexible cell width mode (East Asian Width)
 	flexWidthMode      bool               // When true, new chars get FlexWidth=true and calculated CellWidth
@@ -183,11 +188,11 @@ type Buffer struct {
 	lastManualVertScroll time.Time // When user last manually scrolled vertically
 
 	// Horizontal auto-scroll tracking
-	lastHorizCursorMoveDir  int       // -1=left, 0=unknown, 1=right (for horiz auto-scroll)
-	lastManualHorizScroll   time.Time // When user last manually scrolled horizontally
-	lastScrollCausingEvent  time.Time // When a scroll-causing event last occurred (line to scrollback)
+	lastHorizCursorMoveDir  int         // -1=left, 0=unknown, 1=right (for horiz auto-scroll)
+	lastManualHorizScroll   time.Time   // When user last manually scrolled horizontally
+	lastScrollCausingEvent  time.Time   // When a scroll-causing event last occurred (line to scrollback)
 	horizMemos              []HorizMemo // Per-scanline horizontal scroll memos (populated during paint)
-	isAbsoluteHorizPosition bool      // True if last horiz move was absolute (CSI H/f/G)
+	isAbsoluteHorizPosition bool        // True if last horiz move was absolute (CSI H/f/G)
 
 	// Auto-scroll mode control (DEC Private Mode)
 	autoScrollDisabled bool // When true, cursor-following auto-scroll is disabled
@@ -226,11 +231,11 @@ type Buffer struct {
 	leftRightMarginMode bool
 
 	// Standard ANSI modes and tab stops.
-	currentProtected bool        // DECSCA: written cells are protected from selective erase
-	insertMode      bool         // IRM (mode 4): printed chars insert (shift right)
-	newLineMode     bool         // LNM (mode 20): output LF also does CR
-	lastPrintedChar rune         // for REP (CSI b)
-	tabStops        map[int]bool // horizontal tab stops (visual columns)
+	currentProtected bool         // DECSCA: written cells are protected from selective erase
+	insertMode       bool         // IRM (mode 4): printed chars insert (shift right)
+	newLineMode      bool         // LNM (mode 20): output LF also does CR
+	lastPrintedChar  rune         // for REP (CSI b)
+	tabStops         map[int]bool // horizontal tab stops (visual columns)
 
 	// Keyboard/interaction modes an input adapter consults to encode keys.
 	appCursorKeys  bool // DECCKM (?1): arrows send ESC O x, not ESC [ x
@@ -318,10 +323,10 @@ type Buffer struct {
 	// instead of version tracking, so alternating between glyph frames will be cache hits
 
 	// Sprite overlay system
-	sprites      map[int]*Sprite        // Sprite ID -> Sprite
-	cropRects    map[int]*CropRectangle // Crop rectangle ID -> CropRectangle
-	spriteUnitX  int                    // Subdivisions per cell horizontally (default 8)
-	spriteUnitY  int                    // Subdivisions per cell vertically (default 8)
+	sprites     map[int]*Sprite        // Sprite ID -> Sprite
+	cropRects   map[int]*CropRectangle // Crop rectangle ID -> CropRectangle
+	spriteUnitX int                    // Subdivisions per cell horizontally (default 8)
+	spriteUnitY int                    // Subdivisions per cell vertically (default 8)
 
 	// Screen crop (in sprite coordinate units, -1 = no crop)
 	widthCrop  int // X coordinate beyond which nothing renders
@@ -339,46 +344,46 @@ type Buffer struct {
 // The first logical scanline (0) begins after the scrollback area - no splits can occur
 // in the scrollback area above the yellow dotted line.
 type ScreenSplit struct {
-	ScreenY         int     // Y in sprite units relative to logical screen start (NOT absolute screen)
-	BufferRow       int     // 0-indexed row in logical screen to start drawing from
-	BufferCol       int     // 0-indexed column in logical screen to start drawing from
-	TopFineScroll   int     // 0 to (subdivisions-1), higher = more of top row clipped
-	LeftFineScroll  int     // 0 to (subdivisions-1), higher = more of left column clipped
-	CharWidthScale  float64 // Character width multiplier (0 = inherit from main screen)
-	LineDensity     int     // Line density override (0 = inherit from main screen)
+	ScreenY        int     // Y in sprite units relative to logical screen start (NOT absolute screen)
+	BufferRow      int     // 0-indexed row in logical screen to start drawing from
+	BufferCol      int     // 0-indexed column in logical screen to start drawing from
+	TopFineScroll  int     // 0 to (subdivisions-1), higher = more of top row clipped
+	LeftFineScroll int     // 0 to (subdivisions-1), higher = more of left column clipped
+	CharWidthScale float64 // Character width multiplier (0 = inherit from main screen)
+	LineDensity    int     // Line density override (0 = inherit from main screen)
 }
 
 // NewBuffer creates a new terminal buffer
 func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 	b := &Buffer{
-		cols:                cols,
-		rows:                rows,
-		logicalCols:         0, // 0 means use physical
-		logicalRows:         0, // 0 means use physical
-		cursorVisible:       true,
-		currentFg:           DefaultForeground,
-		currentBg:           DefaultBackground,
-		maxScrollback:       maxScrollback,
-		screenInfo:          DefaultScreenInfo(),
-		dirty:               true,
-		darkTheme:           true, // Default to dark theme
-		preferredDarkTheme:  true, // User preference defaults to dark
-		lineDensity:         25,            // Default line density
-		currentBGP:          -1,            // -1 = use foreground color code as palette
-		fontSlots:           map[uint8]string{},
+		cols:               cols,
+		rows:               rows,
+		logicalCols:        0, // 0 means use physical
+		logicalRows:        0, // 0 means use physical
+		cursorVisible:      true,
+		currentFg:          DefaultForeground,
+		currentBg:          DefaultBackground,
+		maxScrollback:      maxScrollback,
+		screenInfo:         DefaultScreenInfo(),
+		dirty:              true,
+		darkTheme:          true, // Default to dark theme
+		preferredDarkTheme: true, // User preference defaults to dark
+		lineDensity:        25,   // Default line density
+		currentBGP:         -1,   // -1 = use foreground color code as palette
+		fontSlots:          map[uint8]string{},
 		scriptFonts:        map[string]string{},
-		palettes:     make(map[int]*Palette),
-		customGlyphs: make(map[rune]*CustomGlyph),
-		sprites:             make(map[int]*Sprite),
-		cropRects:           make(map[int]*CropRectangle),
-		spriteUnitX:         8,  // Default: 8 subdivisions per cell
-		spriteUnitY:         8,  // Default: 8 subdivisions per cell
-		widthCrop:           -1, // -1 = no crop
-		heightCrop:          -1, // -1 = no crop
-		screenSplits:        make(map[int]*ScreenSplit),
-		autoWrapMode:        true, // DECAWM default enabled
-		smartWordWrap:       true, // Smart word wrap default enabled
-		sixelScrolling:      true, // sixel images advance the cursor below them
+		palettes:           make(map[int]*Palette),
+		customGlyphs:       make(map[rune]*CustomGlyph),
+		sprites:            make(map[int]*Sprite),
+		cropRects:          make(map[int]*CropRectangle),
+		spriteUnitX:        8,  // Default: 8 subdivisions per cell
+		spriteUnitY:        8,  // Default: 8 subdivisions per cell
+		widthCrop:          -1, // -1 = no crop
+		heightCrop:         -1, // -1 = no crop
+		screenSplits:       make(map[int]*ScreenSplit),
+		autoWrapMode:       true, // DECAWM default enabled
+		smartWordWrap:      true, // Smart word wrap default enabled
+		sixelScrolling:     true, // sixel images advance the cursor below them
 	}
 	b.initScreen()
 	return b
@@ -971,21 +976,6 @@ func (b *Buffer) EmitRemainingScreenLines() {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // SetBracketedPasteMode enables or disables bracketed paste mode
 func (b *Buffer) SetBracketedPasteMode(enabled bool) {
 	b.mu.Lock()
@@ -1137,30 +1127,6 @@ func (b *Buffer) GetAmbiguousWidthMode() AmbiguousWidthMode {
 	defer b.mu.RUnlock()
 	return b.ambiguousWidthMode
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // SetAttributes sets current text rendering attributes
 func (b *Buffer) SetAttributes(fg, bg Color, bold, italic, underline, reverse bool) {
@@ -1366,27 +1332,6 @@ func (b *Buffer) SetStrikethrough(strikethrough bool) {
 	b.currentStrikethrough = strikethrough
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // SetAutoWrapMode enables or disables auto-wrap at end of line (DECAWM, mode 7).
 // When disabled, the cursor stays at the last column and characters overwrite that position.
 func (b *Buffer) SetAutoWrapMode(enabled bool) {
@@ -1417,28 +1362,3 @@ func (b *Buffer) IsSmartWordWrapEnabled() bool {
 	defer b.mu.RUnlock()
 	return b.smartWordWrap
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

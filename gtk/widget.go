@@ -1072,22 +1072,29 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
 			continue
 		}
-		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, img.W, img.H)
+		// A placement may show only part of its image (the kitty protocol's
+		// x/y/w/h crop), so the surface is built from the source rectangle
+		// rather than the whole bitmap.
+		sx, sy, sw, sh := im.SourceRect()
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, sw, sh)
 		if surface.Status() != cairo.STATUS_SUCCESS {
 			continue
 		}
-		stride := cairo.FormatStrideForWidth(cairo.FORMAT_ARGB32, img.W)
+		stride := cairo.FormatStrideForWidth(cairo.FORMAT_ARGB32, sw)
 		ptr := surface.GetData()
-		if ptr == nil || stride < img.W*4 {
+		if ptr == nil || stride < sw*4 {
 			continue
 		}
 		// Flush before touching the buffer directly, mark dirty after: cairo
 		// caches otherwise and the blit shows stale pixels.
 		surface.Flush()
-		data := unsafe.Slice((*byte)(ptr), stride*img.H)
-		for y := 0; y < img.H; y++ {
-			for x := 0; x < img.W; x++ {
-				si := (y*img.W + x) * 4
+		data := unsafe.Slice((*byte)(ptr), stride*sh)
+		for y := 0; y < sh; y++ {
+			for x := 0; x < sw; x++ {
+				si := ((y+sy)*img.W + (x + sx)) * 4
 				r := uint16(img.RGBA[si])
 				g := uint16(img.RGBA[si+1])
 				b := uint16(img.RGBA[si+2])
@@ -1119,8 +1126,8 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 		destW, destH := im.DestSize()
 		dw := float64(destW) / scale
 		dh := float64(destH) / scale
-		if dw != float64(img.W) || dh != float64(img.H) {
-			cr.Scale(dw/float64(img.W), dh/float64(img.H))
+		if dw != float64(sw) || dh != float64(sh) {
+			cr.Scale(dw/float64(sw), dh/float64(sh))
 		}
 		cr.SetSourceSurface(surface, 0, 0)
 		cr.Paint()
@@ -1910,6 +1917,11 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 	// Render behind sprites (visible where text has default background)
 	w.renderSprites(cr, behindSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
+	// Images at a NEGATIVE z-index go under the text, which is what makes
+	// text-over-image work; the rest are drawn after the glyphs below.
+	imagesBelow, imagesAbove := w.buffer.GetImagesByZ()
+	w.renderImages(cr, imagesBelow, charWidth, charHeight, scrollOffset, horizOffset)
+
 	// Set up font
 	cr.SelectFontFace(fontFamily, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
 	cr.SetFontSize(float64(fontSize))
@@ -2374,7 +2386,7 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 	w.renderSprites(cr, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
 	// Render cell-anchored bitmap images (Sixel)
-	w.renderImages(cr, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
+	w.renderImages(cr, imagesAbove, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits overlay specific screen regions with different buffer positions

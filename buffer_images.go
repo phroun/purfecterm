@@ -1,5 +1,7 @@
 package purfecterm
 
+import "sort"
+
 // Cell-anchored bitmap images (from Sixel). An image is anchored at a screen
 // cell (Row, Col) and occupies CellsWide x CellsHigh cells; it scrolls with the
 // text and is dropped when it scrolls off the top or the screen is cleared. A
@@ -12,6 +14,26 @@ type PlacedImage struct {
 	CellsWide int
 	CellsHigh int
 	Image     *SixelImage
+
+	// ImageID and PlacementID identify a kitty graphics placement, which unlike
+	// Sixel or an iTerm2 inline image is addressable after the fact: the same
+	// stored image can carry several placements, and either can be deleted by
+	// ID. Both are 0 for a protocol with no such notion.
+	ImageID     uint32
+	PlacementID uint32
+
+	// ZIndex orders drawing. Negative means BEHIND the text, which is what
+	// makes text-over-image work; images at the same z draw in placement order.
+	ZIndex int
+
+	// Virtual marks a placement that is not drawn at Row/Col but positioned by
+	// Unicode placeholder cells in the text. It is held so the placeholder
+	// cells can find it, and skipped by an ordinary draw pass.
+	Virtual bool
+
+	// SrcX/SrcY/SrcW/SrcH crop the source image before drawing; zero width or
+	// height means the whole image. This is the protocol's x/y/w/h.
+	SrcX, SrcY, SrcW, SrcH int
 
 	// DestW/DestH are the size in terminal pixels the image is to be DRAWN at,
 	// which is not always the size it was decoded at. Sixel carries its own
@@ -185,4 +207,137 @@ func (b *Buffer) shiftImagesLocked(delta, top, bottom int) {
 // the lock.
 func (b *Buffer) clearImagesLocked() {
 	b.images = nil
+}
+
+// SourceRect returns the crop applied to the source image before drawing, as a
+// rectangle guaranteed to lie inside it. An unset crop is the whole image.
+func (p *PlacedImage) SourceRect() (x, y, w, h int) {
+	if p == nil || p.Image == nil {
+		return 0, 0, 0, 0
+	}
+	x, y, w, h = p.SrcX, p.SrcY, p.SrcW, p.SrcH
+	if w <= 0 {
+		w = p.Image.W - x
+	}
+	if h <= 0 {
+		h = p.Image.H - y
+	}
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x > p.Image.W {
+		x = p.Image.W
+	}
+	if y > p.Image.H {
+		y = p.Image.H
+	}
+	if x+w > p.Image.W {
+		w = p.Image.W - x
+	}
+	if y+h > p.Image.H {
+		h = p.Image.H - y
+	}
+	if w < 0 {
+		w = 0
+	}
+	if h < 0 {
+		h = 0
+	}
+	return x, y, w, h
+}
+
+// GetImagesByZ returns the placed images a renderer should draw, split by
+// whether they belong under or over the text. Each group is ordered back to
+// front. Virtual placements are excluded: they are drawn from the placeholder
+// cells that reference them, not from the placement list.
+//
+// A renderer that does not implement z-ordering can keep calling GetImages and
+// draw everything over the text, which is where images went before z existed.
+func (b *Buffer) GetImagesByZ() (below, above []*PlacedImage) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, im := range b.images {
+		if im.Virtual {
+			continue
+		}
+		if im.ZIndex < 0 {
+			below = append(below, im)
+		} else {
+			above = append(above, im)
+		}
+	}
+	sortByZ(below)
+	sortByZ(above)
+	return below, above
+}
+
+// sortByZ orders a group back to front, keeping placement order within one
+// z-index so that equal-z images stack in the order they arrived.
+func sortByZ(list []*PlacedImage) {
+	sort.SliceStable(list, func(i, j int) bool { return list[i].ZIndex < list[j].ZIndex })
+}
+
+// PlaceKittyImage adds a fully specified placement and returns it. Unlike
+// PlaceImage it does not touch the cursor: the kitty protocol decides cursor
+// movement from its own C key, and a virtual placement never moves it at all.
+func (b *Buffer) PlaceKittyImage(pi *PlacedImage) *PlacedImage {
+	if pi == nil || pi.Image == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.nextImageID++
+	pi.ID = b.nextImageID
+	// A placement ID is unique per image, so re-placing the same (image,
+	// placement) pair replaces rather than stacks.
+	if pi.ImageID != 0 {
+		kept := b.images[:0]
+		for _, ex := range b.images {
+			if ex.ImageID == pi.ImageID && ex.PlacementID == pi.PlacementID {
+				continue
+			}
+			kept = append(kept, ex)
+		}
+		b.images = kept
+	}
+	b.images = append(b.images, pi)
+	b.markDirty()
+	return pi
+}
+
+// DeleteImagesFunc drops every placement the predicate accepts and reports how
+// many went. Deleting a placement never deletes the stored image; the caller
+// decides that from the protocol's uppercase/lowercase distinction.
+func (b *Buffer) DeleteImagesFunc(match func(*PlacedImage) bool) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	kept := b.images[:0]
+	n := 0
+	for _, im := range b.images {
+		if match(im) {
+			n++
+			continue
+		}
+		kept = append(kept, im)
+	}
+	b.images = kept
+	if n > 0 {
+		b.markDirty()
+	}
+	return n
+}
+
+// HasPlacementFor reports whether any placement references a stored image.
+func (b *Buffer) HasPlacementFor(imageID uint32) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, im := range b.images {
+		if im.ImageID == imageID {
+			return true
+		}
+	}
+	return false
 }
