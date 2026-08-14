@@ -1099,6 +1099,27 @@ func spriteCoordToPixelsQt(coordinate float64, unitsPerCell int, cellSize int) f
 	return float64(wholeCells*cellSize) + remainderUnits*float64(cellSize)/float64(unitsPerCell)
 }
 
+// renderImages blits cell-anchored Sixel images onto the terminal.
+//
+// BEST EFFORT: the Qt toolkit does not build in this environment, so the miqt
+// image calls here are written against the expected API and should be verified
+// against your miqt version. The likely points of adjustment are the QImage
+// constructor from raw bytes (NewQImage5 here), the format enum
+// (QImage__Format_RGBA8888), and the DrawImage overload. The RGBA layout the
+// decoder produces matches Format_RGBA8888 directly (no premultiply needed).
+func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	for _, im := range images {
+		img := im.Image
+		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
+			continue
+		}
+		qimg := qt.NewQImage5(img.RGBA, img.W, img.H, qt.QImage__Format_RGBA8888)
+		pixelX := im.Col*charWidth + terminalLeftPadding - horizOffsetX*charWidth
+		pixelY := (im.Row + scrollOffsetY) * charHeight
+		painter.DrawImage2(pixelX, pixelY, qimg)
+	}
+}
+
 // renderSprites renders a list of sprites at their positions
 func (w *Widget) renderSprites(painter *qt.QPainter, sprites []*purfecterm.Sprite, charWidth, charHeight int, scheme purfecterm.ColorScheme, isDark bool, scrollOffsetY, horizOffsetX int) {
 	if len(sprites) == 0 {
@@ -2075,6 +2096,9 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 
 	// Render front sprites (overlay on top of text)
 	w.renderSprites(painter, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
+
+	// Render cell-anchored bitmap images (Sixel)
+	w.renderImages(painter, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits use logical scanline numbers relative to the scroll boundary

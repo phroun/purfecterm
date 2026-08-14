@@ -29,6 +29,7 @@ type Cell struct {
 	Reverse        bool
 	Blink          bool    // When true, character animates (bobbing wave instead of traditional blink)
 	Strikethrough  bool    // When true, draw a line through the character
+	Protected      bool    // DECSCA: shielded from selective erase (DECSED/DECSEL)
 	FlexWidth      bool    // When true, cell uses East Asian Width for variable width rendering
 	CellWidth      float64 // Visual width in cell units (0.5, 1.0, 1.5, 2.0) - only used when FlexWidth is true
 	BGP            int     // Base Glyph Palette index (-1 = use foreground color code as palette)

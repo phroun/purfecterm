@@ -19,6 +19,8 @@ const (
 	stateOSCEsc                  // ESC seen inside an OSC string (expecting the \ of ST)
 	stateCharset                 // After ESC ( or ESC )
 	stateDECLineAttr             // After ESC # (waiting for line attribute command)
+	stateDCS                     // After ESC P (collecting a DCS string)
+	stateDCSEsc                  // ESC seen inside a DCS string (expecting the \ of ST)
 )
 
 // SGRParam represents an SGR parameter with optional subparameters
@@ -44,6 +46,9 @@ type Parser struct {
 	oscCmd int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
 	oscBuf strings.Builder // OSC command arguments
 
+	// DCS accumulator (ESC P ... ST)
+	dcsBuf strings.Builder
+
 	// OSC 52 clipboard (see clipboard.go)
 	onClipboard     func(ev ClipboardEvent, reply func([]byte))
 	clipboardPolicy ClipboardPolicy
@@ -52,6 +57,10 @@ type Parser struct {
 	// UTF-8 multi-byte handling
 	utf8Buf  []byte
 	utf8Need int
+
+	// savedModes holds DEC private mode values stashed by XTSAVE (CSI ? Pm s)
+	// for XTRESTORE (CSI ? Pm r).
+	savedModes map[int]bool
 }
 
 // NewParser creates a new ANSI parser for the given buffer
@@ -86,6 +95,14 @@ type CaptureObserver interface {
 	// only for the call. SerializeLineANS turns them into a self-contained
 	// string.
 	OnLineOff(line []Cell, info LineInfo)
+
+	// OnScreenSwitch reports the terminal switching between the primary and the
+	// alternate screen (DEC modes ?47 / ?1047 / ?1049): toAlt is true on entering
+	// the alternate screen, false on returning to the primary. It fires whenever
+	// an observer is set — regardless of SetCaptureScope — so a consumer always
+	// knows which screen the events that follow belong to, even for a screen it
+	// is not itself capturing.
+	OnScreenSwitch(toAlt bool)
 
 	// The live-screen events (the `live` rung) let an observer mirror the screen
 	// in place. They fire only while live events are enabled (SetCaptureLive),
@@ -128,6 +145,7 @@ type NopCaptureObserver struct{}
 
 func (NopCaptureObserver) OnOutput([]byte)                       {}
 func (NopCaptureObserver) OnLineOff([]Cell, LineInfo)            {}
+func (NopCaptureObserver) OnScreenSwitch(bool)                   {}
 func (NopCaptureObserver) OnWrite(int, int, string, string)      {}
 func (NopCaptureObserver) OnCursorMove(int, int)                 {}
 func (NopCaptureObserver) OnNewline(int, int)                    {}
@@ -236,6 +254,10 @@ func (p *Parser) processByte(b byte) {
 		p.state = stateGround
 	case stateDECLineAttr:
 		p.handleDECLineAttr(b)
+	case stateDCS:
+		p.handleDCS(b)
+	case stateDCSEsc:
+		p.handleDCSEsc(b)
 	}
 }
 
@@ -262,7 +284,7 @@ func (p *Parser) handleGround(b byte) {
 	case 0x08: // BS - backspace
 		p.buffer.Backspace()
 	case 0x09: // HT - horizontal tab
-		p.buffer.TabVisual()
+		p.buffer.TabForward(1)
 	case 0x0A: // LF - line feed
 		p.buffer.LineFeed()
 	case 0x0B, 0x0C: // VT, FF - treated as line feed
@@ -291,10 +313,16 @@ func (p *Parser) handleEscape(b byte) {
 	case ']': // OSC - Operating System Command
 		p.state = stateOSC
 		p.oscBuf.Reset()
+	case 'P': // DCS - Device Control String (ESC P ... ST)
+		p.state = stateDCS
+		p.dcsBuf.Reset()
 	case '(', ')': // Character set designation
 		p.state = stateCharset
 	case '#': // DEC line attribute commands (DECDHL, DECDWL, DECSWL, DECALN)
 		p.state = stateDECLineAttr
+	case 'H': // HTS - Horizontal Tab Set (set a tab stop at the cursor)
+		p.buffer.SetTabStop()
+		p.state = stateGround
 	case '7': // DECSC - Save Cursor
 		p.buffer.SaveCursor()
 		p.state = stateGround
@@ -302,34 +330,33 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.RestoreCursor()
 		p.state = stateGround
 	case 'c': // RIS - Reset to Initial State
+		p.buffer.LeaveAltScreen() // a hard reset returns to the primary screen
 		p.buffer.ClearScreen()
 		p.buffer.SetCursor(0, 0)
 		p.buffer.ResetAttributes()
+		p.buffer.ResetScrollRegion()
+		p.buffer.resetTabStops()
+		p.buffer.SetInsertMode(false)
+		p.buffer.SetNewLineMode(false)
+		p.buffer.resetKeyModes()
+		p.buffer.resetOSCColors()
+		p.buffer.SetProtectedAttr(false)
 		p.state = stateGround
-	case 'D': // IND - Index (move down one line, scroll if needed)
-		_, rows := p.buffer.GetSize()
-		_, y := p.buffer.GetCursor()
-		if y >= rows-1 {
-			p.buffer.ScrollUp(1)
-		} else {
-			p.buffer.MoveCursorDown(1)
-		}
+	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
+		p.buffer.LineFeed()
 		p.state = stateGround
 	case 'E': // NEL - Next Line
 		p.buffer.CarriageReturn()
 		p.buffer.LineFeed()
 		p.state = stateGround
-	case 'M': // RI - Reverse Index (move up one line, scroll if needed)
-		_, y := p.buffer.GetCursor()
-		if y == 0 {
-			p.buffer.ScrollDown(1)
-		} else {
-			p.buffer.MoveCursorUp(1)
-		}
+	case 'M': // RI - Reverse Index (up one line; reverse-scrolls at the top margin)
+		p.buffer.ReverseIndex()
 		p.state = stateGround
 	case '=': // DECKPAM - Keypad Application Mode
+		p.buffer.SetApplicationKeypad(true)
 		p.state = stateGround
 	case '>': // DECKPNM - Keypad Numeric Mode
+		p.buffer.SetApplicationKeypad(false)
 		p.state = stateGround
 	default:
 		// Unknown escape sequence, return to ground state
@@ -495,12 +522,16 @@ func (p *Parser) executeCSI(finalByte byte) {
 		_, y := p.buffer.GetCursor()
 		p.buffer.SetCursorVisual(x, y)
 
-	case 'H', 'f': // CUP/HVP - Cursor Position
+	case 'H', 'f': // CUP/HVP - Cursor Position (origin-mode aware)
 		row := p.getParam(0, 1) - 1
 		col := p.getParam(1, 1) - 1
-		p.buffer.SetCursorVisual(col, row)
+		p.buffer.SetCursorPosition(col, row)
 
-	case 'J': // ED - Erase in Display
+	case 'J': // ED - Erase in Display / DECSED (CSI ? Ps J - selective)
+		if p.csiPrivate == '?' {
+			p.buffer.SelectiveEraseDisplay(p.getParam(0, 0))
+			break
+		}
 		switch p.getParam(0, 0) {
 		case 0:
 			p.buffer.ClearToEndOfScreen()
@@ -511,7 +542,11 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.buffer.SetCursor(0, 0)
 		}
 
-	case 'K': // EL - Erase in Line
+	case 'K': // EL - Erase in Line / DECSEL (CSI ? Ps K - selective)
+		if p.csiPrivate == '?' {
+			p.buffer.SelectiveEraseLine(p.getParam(0, 0))
+			break
+		}
 		switch p.getParam(0, 0) {
 		case 0:
 			p.buffer.ClearToEndOfLine()
@@ -547,45 +582,93 @@ func (p *Parser) executeCSI(finalByte byte) {
 		x, _ := p.buffer.GetCursor()
 		p.buffer.SetCursor(x, y)
 
+	case 'e': // VPR - Vertical Position Relative (down n rows)
+		p.buffer.MoveCursorDown(p.getParam(0, 1))
+
+	case '`': // HPA - Horizontal Position Absolute (visual column)
+		x := p.getParam(0, 1) - 1
+		_, y := p.buffer.GetCursor()
+		p.buffer.SetCursorVisual(x, y)
+
+	case 'a': // HPR - Horizontal Position Relative (forward n columns)
+		p.buffer.MoveCursorForwardVisual(p.getParam(0, 1))
+
+	case 'b': // REP - Repeat the last printed character n times
+		p.buffer.RepeatLastChar(p.getParam(0, 1))
+
+	case 'g': // TBC - Tab Clear (0 = at cursor, 3 = all)
+		p.buffer.ClearTabStop(p.getParam(0, 0))
+
+	case 'I': // CHT - Cursor Forward Tabulation (n tab stops)
+		p.buffer.TabForward(p.getParam(0, 1))
+
+	case 'Z': // CBT - Cursor Backward Tabulation (n tab stops)
+		p.buffer.TabBackward(p.getParam(0, 1))
+
 	case 'm': // SGR - Select Graphic Rendition
 		p.executeSGR()
 
 	case 'h': // SM - Set Mode
 		if p.csiPrivate == '?' {
 			p.executePrivateModeSet(true)
+		} else if p.csiPrivate == 0 {
+			p.executeModeSet(true)
 		}
 
 	case 'l': // RM - Reset Mode
 		if p.csiPrivate == '?' {
 			p.executePrivateModeSet(false)
+		} else if p.csiPrivate == 0 {
+			p.executeModeSet(false)
 		}
 
-	case 's': // SCP - Save Cursor Position
-		p.buffer.SaveCursor()
+	case 's': // XTSAVE (CSI ? Pm s) / DECSLRM (CSI Pl;Pr s under DECLRMM) / SCP
+		if p.csiPrivate == '?' {
+			p.executeXTSAVE()
+		} else if p.csiPrivate == 0 && p.buffer.IsLeftRightMarginMode() {
+			p.buffer.SetLeftRightMargins(p.getParam(0, 1), p.getParam(1, 0))
+		} else {
+			p.buffer.SaveCursor()
+		}
 
 	case 'u': // RCP - Restore Cursor Position
 		p.buffer.RestoreCursor()
 
 	case 'n': // DSR - Device Status Report
-		// Would need to send response - ignore for now
+		p.executeDSR()
 
-	case 'r': // DECSTBM - Set Top and Bottom Margins
-		// Scroll region - not yet implemented
+	case 'r': // DECSTBM (CSI Pt;Pb r) / XTRESTORE (CSI ? Pm r)
+		if p.csiPrivate == '?' {
+			p.executeXTRESTORE()
+		} else if p.csiPrivate == 0 {
+			p.buffer.SetScrollRegion(p.getParam(0, 1), p.getParam(1, 0))
+		}
 
 	case 'c': // DA - Device Attributes
-		// Would need to send response - ignore
+		p.executeDA()
 
 	case 't': // Window manipulation
 		p.executeWindowManipulation()
 
-	case 'p': // DECRQM - Request DEC Private Mode (CSI ? Ps $ p)
+	case 'p': // DECRQM (CSI ? Ps $ p) / DECSTR (CSI ! p)
 		if p.csiPrivate == '?' && p.csiIntermediate == '$' {
 			p.executeDECRQM()
+		} else if p.csiPrivate == '!' {
+			// DECSTR - Soft Terminal Reset: clear the scroll region and origin
+			// mode, reset attributes, and home the cursor (screen not cleared).
+			p.buffer.ResetScrollRegion()
+			p.buffer.ResetAttributes()
+			p.buffer.SetInsertMode(false)
+			p.buffer.SetProtectedAttr(false)
+			p.buffer.SetCursor(0, 0)
 		}
 
-	case 'q': // DECSCUSR - Set Cursor Style (with space intermediate)
+	case 'q': // DECSCUSR (SP q) / DECSCA (" q - select character protection)
 		if p.csiIntermediate == ' ' {
 			p.executeDECSCUSR()
+		} else if p.csiIntermediate == '"' {
+			// DECSCA: Ps 1 = protected, 0/2 = not protected.
+			p.buffer.SetProtectedAttr(p.getParam(0, 0) == 1)
 		}
 	}
 }
@@ -679,6 +762,30 @@ func (p *Parser) decrqmStatus(mode int) int {
 		return 2
 	}
 	switch mode {
+	case 1: // DECCKM - Application cursor keys
+		return set(p.buffer.IsApplicationCursorKeys())
+	case 3: // DECCOLM - 132-column mode
+		return set(p.buffer.Get132ColumnMode())
+	case 5: // DECSCNM - reverse video (light mode)
+		return set(!p.buffer.IsDarkTheme())
+	case 6: // DECOM - Origin Mode
+		return set(p.buffer.IsOriginMode())
+	case 7: // DECAWM - Auto-wrap mode
+		return set(p.buffer.IsAutoWrapModeEnabled())
+	case 25: // DECTCEM - Cursor visibility
+		return set(p.buffer.IsCursorVisible())
+	case 69: // DECLRMM - Left/Right Margin Mode
+		return set(p.buffer.IsLeftRightMarginMode())
+	case 80: // DECSDM - Sixel Display Mode
+		return set(p.buffer.IsSixelDisplayMode())
+	case 8452: // Sixel scrolling
+		return set(p.buffer.IsSixelScrolling())
+	case 1004: // Focus reporting
+		return set(p.buffer.IsFocusReporting())
+	case 1007: // Alternate scroll mode
+		return set(p.buffer.IsAltScrollMode())
+	case 47, 1047, 1049: // Alternate screen buffer
+		return set(p.buffer.IsAltScreen())
 	case 1000, 1002, 1003:
 		return set(p.buffer.GetMouseTrackingMode() == mode)
 	case 1006:
@@ -950,6 +1057,18 @@ func (p *Parser) executeSGR() {
 	}
 }
 
+// executeModeSet handles the non-private ANSI modes (SM/RM without '?').
+func (p *Parser) executeModeSet(set bool) {
+	for _, param := range p.csiParams {
+		switch param {
+		case 4: // IRM - Insert/Replace Mode
+			p.buffer.SetInsertMode(set)
+		case 20: // LNM - Line Feed/New Line Mode
+			p.buffer.SetNewLineMode(set)
+		}
+	}
+}
+
 func (p *Parser) executePrivateModeSet(set bool) {
 	for _, param := range p.csiParams {
 		switch param {
@@ -958,10 +1077,27 @@ func (p *Parser) executePrivateModeSet(set bool) {
 		case 5: // DECSCNM - Screen Mode (reverse video)
 			// h = reverse video (light mode), l = normal video (dark mode)
 			p.buffer.SetDarkTheme(!set)
+		case 6: // DECOM - Origin Mode (cursor addressing relative to scroll region)
+			p.buffer.SetOriginMode(set)
+		case 69: // DECLRMM - Left/Right Margin Mode (enables DECSLRM)
+			p.buffer.SetLeftRightMarginMode(set)
+		case 80: // DECSDM - Sixel Display Mode
+			p.buffer.SetSixelDisplayMode(set)
+		case 8452: // Sixel scrolling (cursor lands below the image)
+			p.buffer.SetSixelScrolling(set)
 		case 25: // DECTCEM - Cursor visibility
 			p.buffer.SetCursorVisible(set)
-		case 1049: // Alternate screen buffer
-			// Not yet implemented
+		case 47, 1047, 1049: // Alternate screen buffer
+			// All three enter/leave the alternate screen. In this model the alt
+			// screen is fresh-on-entry and discarded on leave, and the primary
+			// context (including its cursor) is stashed and restored — so the
+			// ?1049 save/restore-cursor semantics fall out, and ?47/?1047 get the
+			// same clean isolation.
+			if set {
+				p.buffer.EnterAltScreen()
+			} else {
+				p.buffer.LeaveAltScreen()
+			}
 		case 1000: // X11 Normal Mouse Tracking (button press/release)
 			if set {
 				p.buffer.SetMouseTrackingMode(1000)
@@ -1030,7 +1166,11 @@ func (p *Parser) executePrivateModeSet(set bool) {
 				}
 			}
 		case 1: // DECCKM - Application cursor keys
-			// Not yet implemented
+			p.buffer.SetApplicationCursorKeys(set)
+		case 1004: // Focus reporting
+			p.buffer.SetFocusReporting(set)
+		case 1007: // Alternate scroll mode (wheel -> arrows on the alt screen)
+			p.buffer.SetAltScrollMode(set)
 		case 7: // DECAWM - Auto-wrap mode
 			// h = enable auto-wrap (cursor wraps to next line), l = disable (stay at last column)
 			p.buffer.SetAutoWrapMode(set)
@@ -1111,6 +1251,12 @@ func (p *Parser) executeOSC() {
 	args := p.oscBuf.String()
 
 	switch p.oscCmd {
+	case 0, 1, 2: // Set window/icon title
+		p.executeOSCTitle(args)
+	case 4: // Set/query 256-color palette entry
+		p.executeOSCPaletteColor(args)
+	case 10, 11, 12: // Set/query default foreground / background / cursor color
+		p.executeOSCColorFgBg(p.oscCmd, args)
 	case 52: // Clipboard (OSC 52)
 		p.executeOSCClipboard(args)
 	case 7000: // Palette management

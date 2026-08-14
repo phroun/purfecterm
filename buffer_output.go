@@ -1,7 +1,5 @@
 package purfecterm
 
-import "time"
-
 // --- Character Writing ---
 
 // WriteChar writes a character at the current cursor position
@@ -88,7 +86,6 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	}
 
 	effectiveCols := b.EffectiveCols()
-	effectiveRows := b.EffectiveRows()
 
 	// Check if this character has a custom glyph defined
 	hasCustomGlyph := b.customGlyphs[ch] != nil
@@ -133,15 +130,25 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	// Handle line wrap (DECAWM mode 7)
 	// If visual width wrap is enabled, wrap based on accumulated visual width
 	// Otherwise, wrap based on cell count (traditional behavior)
+	// With left/right margins the wrap boundary is the right margin and wrapping
+	// returns to the left margin, when the cursor is inside the box (including
+	// the just-past-right pending-wrap column). Otherwise it is the screen edge.
+	wrapLimit := effectiveCols
+	wrapToCol := 0
+	if left, right, active := b.lrMarginsLocked(); active && b.cursorX >= left && b.cursorX <= right+1 {
+		wrapLimit = right + 1
+		wrapToCol = left
+	}
+
 	shouldWrap := false
 	if (b.visualWidthWrap && b.currentFlexWidth) || !b.currentFlexWidth {
 		// Visual width wrap: standard mode always wraps on accumulated visual
 		// width (the wcwidth contract); flex mode only under ?7028.
 		currentVisualWidth := b.getLineVisualWidth(b.cursorY, b.cursorX)
-		shouldWrap = (currentVisualWidth + charWidth) > float64(effectiveCols)
+		shouldWrap = (currentVisualWidth + charWidth) > float64(wrapLimit)
 	} else {
 		// Traditional cell-count wrap
-		shouldWrap = b.cursorX >= effectiveCols
+		shouldWrap = b.cursorX >= wrapLimit
 	}
 
 	if shouldWrap {
@@ -171,14 +178,11 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					}
 				}
 
-				// Move to next line
+				// Move to next line (region-aware: at the bottom margin this
+				// scrolls the region, leaving the wrapped-from line at cursorY-1,
+				// which the reflow logic below relies on).
 				b.setHorizMoveDir(-1, false)
-				b.trackCursorYMove(b.cursorY + 1)
-				b.cursorY++
-				if b.cursorY >= effectiveRows {
-					b.scrollUpInternal()
-					b.cursorY = effectiveRows - 1
-				}
+				b.advanceLineInternal()
 
 				// Ensure screen has enough rows
 				for b.cursorY >= len(b.screen) {
@@ -232,19 +236,16 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					b.cursorX = leadingSpaces
 				}
 			} else {
-				// Standard auto-wrap: move to next line
+				// Standard auto-wrap: move to next line (region-aware), returning
+				// to the left margin (column 0 when no left margin is set).
 				b.setHorizMoveDir(-1, false)
-				b.cursorX = 0
-				b.trackCursorYMove(b.cursorY + 1)
-				b.cursorY++
-				if b.cursorY >= effectiveRows {
-					b.scrollUpInternal()
-					b.cursorY = effectiveRows - 1
-				}
+				b.cursorX = wrapToCol
+				b.advanceLineInternal()
 			}
 		} else {
-			// Auto-wrap disabled (DECAWM off): stay at last column, overwrite character
-			b.cursorX = effectiveCols - 1
+			// Auto-wrap disabled (DECAWM off): stay at the last column (the right
+			// margin when one is set), overwriting.
+			b.cursorX = wrapLimit - 1
 		}
 	}
 
@@ -263,6 +264,23 @@ func (b *Buffer) writeCharInternal(ch rune) {
 
 	// Ensure line is long enough for the cursor position
 	b.ensureLineLength(b.cursorY, b.cursorX+1)
+
+	// Remember the last printed graphic character for REP (CSI b).
+	b.lastPrintedChar = ch
+
+	// Insert/Replace Mode (IRM): make room by shifting the rest of the line
+	// right by one within the effective right bound before overwriting.
+	if b.insertMode {
+		right := b.EffectiveCols() - 1
+		if _, mr, active := b.lrMarginsLocked(); active {
+			right = mr
+		}
+		b.ensureLineLength(b.cursorY, right+1)
+		line := b.screen[b.cursorY]
+		for c := right; c > b.cursorX; c-- {
+			line[c] = line[c-1]
+		}
+	}
 
 	fg := b.currentFg
 	bg := b.currentBg
@@ -283,6 +301,7 @@ func (b *Buffer) writeCharInternal(ch rune) {
 		Reverse:           b.currentReverse,
 		Blink:             b.currentBlink,
 		Strikethrough:     b.currentStrikethrough,
+		Protected:         b.currentProtected,
 		FlexWidth:         b.currentFlexWidth,
 		BGP:               b.currentBGP,
 		XFlip:             b.currentXFlip,
@@ -386,13 +405,7 @@ func (b *Buffer) Newline() {
 		b.flushLiveWriteRun()
 	}
 	b.cursorX = 0
-	b.trackCursorYMove(b.cursorY + 1)
-	b.cursorY++
-	effectiveRows := b.EffectiveRows()
-	if b.cursorY >= effectiveRows {
-		b.scrollUpInternal()
-		b.cursorY = effectiveRows - 1
-	}
+	b.advanceLineInternal()
 	if b.liveEnabled() {
 		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}
@@ -407,7 +420,13 @@ func (b *Buffer) CarriageReturn() {
 		b.flushLiveWriteRun()
 	}
 	b.setHorizMoveDir(-1, false) // Moving left
-	b.cursorX = 0
+	// With left/right margins, CR returns to the left margin when the cursor is
+	// at or right of it; otherwise to column 0.
+	if left, _, active := b.lrMarginsLocked(); active && b.cursorX >= left {
+		b.cursorX = left
+	} else {
+		b.cursorX = 0
+	}
 	if b.liveEnabled() {
 		b.captureObserver.OnCursorMove(b.cursorX, b.cursorY)
 	}
@@ -421,12 +440,14 @@ func (b *Buffer) LineFeed() {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 	}
-	b.trackCursorYMove(b.cursorY + 1)
-	b.cursorY++
-	effectiveRows := b.EffectiveRows()
-	if b.cursorY >= effectiveRows {
-		b.scrollUpInternal()
-		b.cursorY = effectiveRows - 1
+	b.advanceLineInternal()
+	if b.newLineMode {
+		// LNM (mode 20): a line feed also performs a carriage return.
+		if left, _, active := b.lrMarginsLocked(); active && b.cursorX >= left {
+			b.cursorX = left
+		} else {
+			b.cursorX = 0
+		}
 	}
 	if b.liveEnabled() {
 		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
@@ -477,34 +498,13 @@ func (b *Buffer) Backspace() {
 
 // --- Screen Scrolling ---
 
+// scrollUpInternal scrolls the current scroll region up by one line. With no
+// region set this is the whole screen (feeding scrollback, as before); with a
+// region it is confined to [top,bottom] and does not touch history. Caller holds
+// the lock.
 func (b *Buffer) scrollUpInternal() {
-	if len(b.screen) == 0 {
-		return
-	}
-
-	if b.liveEnabled() {
-		b.flushLiveWriteRun()
-		b.captureObserver.OnScrollLineOff(1)
-	}
-
-	// Push top line to scrollback - this is a scroll-causing event
-	b.pushLineToScrollback(b.screen[0], b.lineInfos[0])
-	b.lastScrollCausingEvent = time.Now()
-
-	// Shift screen up
-	copy(b.screen, b.screen[1:])
-	copy(b.lineInfos, b.lineInfos[1:])
-
-	// Add new empty line at bottom with current attributes
-	lastIdx := len(b.screen) - 1
-	b.screen[lastIdx] = b.makeEmptyLine()
-	b.lineInfos[lastIdx] = b.makeDefaultLineInfo()
-
-	// Content scrolled up = new content at bottom = cursor moving toward newer content
-	// Set direction directly since most cursor movements bypass setCursorInternal
-	b.lastCursorMoveDir = 1 // Down
-
-	b.markDirty()
+	top, bottom := b.scrollRegionLocked()
+	b.scrollRegionUp(top, bottom)
 }
 
 // ScrollUp scrolls up by n lines
@@ -520,12 +520,9 @@ func (b *Buffer) ScrollUp(n int) {
 func (b *Buffer) ScrollDown(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		copy(b.screen[1:], b.screen[:screenLen-1])
-		copy(b.lineInfos[1:], b.lineInfos[:screenLen-1])
-		b.screen[0] = b.makeEmptyLine()
-		b.lineInfos[0] = b.makeDefaultLineInfo()
+	top, bottom := b.scrollRegionLocked()
+	for i := 0; i < n; i++ {
+		b.scrollRegionDown(top, bottom)
 	}
 	b.markDirty()
 }
@@ -545,6 +542,7 @@ func (b *Buffer) ClearScreen() {
 	}
 	b.updateScreenInfo() // Update screen default attributes
 	b.initScreen()
+	b.clearImagesLocked()
 
 	// Reset cursor to top-left
 	b.trackCursorYMove(0)
@@ -727,11 +725,34 @@ func (b *Buffer) ClearToStartOfScreen() {
 func (b *Buffer) InsertLines(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		if b.cursorY < screenLen-1 {
-			copy(b.screen[b.cursorY+1:], b.screen[b.cursorY:screenLen-1])
-			copy(b.lineInfos[b.cursorY+1:], b.lineInfos[b.cursorY:screenLen-1])
+	top, bottom := b.scrollRegionLocked()
+	// IL is a no-op when the cursor is outside the vertical scroll region.
+	if b.cursorY < top || b.cursorY > bottom {
+		return
+	}
+	if bottom >= len(b.screen) {
+		bottom = len(b.screen) - 1
+	}
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		// IL is confined to the margin box; a no-op if the cursor is outside it.
+		if b.cursorX < left || b.cursorX > right {
+			return
+		}
+		for i := 0; i < n; i++ {
+			for y := bottom; y > b.cursorY; y-- {
+				b.copyRowWindow(y-1, y, left, right)
+			}
+			b.blankRowWindow(b.cursorY, left, right)
+		}
+		b.markDirty()
+		return
+	}
+	for i := 0; i < n; i++ {
+		// Shift [cursorY..bottom-1] down to [cursorY+1..bottom]; lines pushed
+		// past the bottom margin are lost.
+		for y := bottom; y > b.cursorY; y-- {
+			b.screen[y] = b.screen[y-1]
+			b.lineInfos[y] = b.lineInfos[y-1]
 		}
 		b.screen[b.cursorY] = b.makeEmptyLine()
 		b.lineInfos[b.cursorY] = b.makeDefaultLineInfo()
@@ -743,14 +764,35 @@ func (b *Buffer) InsertLines(n int) {
 func (b *Buffer) DeleteLines(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		if b.cursorY < screenLen-1 {
-			copy(b.screen[b.cursorY:], b.screen[b.cursorY+1:])
-			copy(b.lineInfos[b.cursorY:], b.lineInfos[b.cursorY+1:])
+	top, bottom := b.scrollRegionLocked()
+	// DL is a no-op when the cursor is outside the vertical scroll region.
+	if b.cursorY < top || b.cursorY > bottom {
+		return
+	}
+	if bottom >= len(b.screen) {
+		bottom = len(b.screen) - 1
+	}
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX < left || b.cursorX > right {
+			return
 		}
-		b.screen[screenLen-1] = b.makeEmptyLine()
-		b.lineInfos[screenLen-1] = b.makeDefaultLineInfo()
+		for i := 0; i < n; i++ {
+			for y := b.cursorY; y < bottom; y++ {
+				b.copyRowWindow(y+1, y, left, right)
+			}
+			b.blankRowWindow(bottom, left, right)
+		}
+		b.markDirty()
+		return
+	}
+	for i := 0; i < n; i++ {
+		// Shift [cursorY+1..bottom] up to [cursorY..bottom-1]; blank the bottom.
+		for y := b.cursorY; y < bottom; y++ {
+			b.screen[y] = b.screen[y+1]
+			b.lineInfos[y] = b.lineInfos[y+1]
+		}
+		b.screen[bottom] = b.makeEmptyLine()
+		b.lineInfos[bottom] = b.makeDefaultLineInfo()
 	}
 	b.markDirty()
 }
@@ -769,6 +811,26 @@ func (b *Buffer) DeleteChars(n int) {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnDeleteChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
 	}
+
+	// With a right margin, DCH shifts cells left only within [cursorX, right];
+	// blanks enter at the right margin and columns beyond it are untouched.
+	if _, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX <= right {
+			b.ensureLineLength(b.cursorY, right+1)
+			line := b.screen[b.cursorY]
+			blank := b.currentDefaultCell()
+			for x := b.cursorX; x <= right; x++ {
+				if x+n <= right {
+					line[x] = line[x+n]
+				} else {
+					line[x] = blank
+				}
+			}
+		}
+		b.markDirty()
+		return
+	}
+
 	line := b.screen[b.cursorY]
 	lineLen := len(line)
 
@@ -798,6 +860,25 @@ func (b *Buffer) InsertChars(n int) {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnInsertChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
+	}
+
+	// With a right margin, ICH shifts cells right only within [cursorX, right];
+	// cells pushed past the right margin are lost, columns beyond it untouched.
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX >= left && b.cursorX <= right {
+			b.ensureLineLength(b.cursorY, right+1)
+			line := b.screen[b.cursorY]
+			blank := b.currentDefaultCell()
+			for x := right; x >= b.cursorX; x-- {
+				if x-n >= b.cursorX {
+					line[x] = line[x-n]
+				} else {
+					line[x] = blank
+				}
+			}
+		}
+		b.markDirty()
+		return
 	}
 
 	// Ensure line is long enough
@@ -836,6 +917,25 @@ func (b *Buffer) EraseChars(n int) {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnEraseChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
+	}
+
+	// With a right margin, ECH does not blank past it.
+	if _, right, lrActive := b.lrMarginsLocked(); lrActive {
+		line := b.screen[b.cursorY]
+		lineLen := len(line)
+		blank := b.currentDefaultCell()
+		endPos := b.cursorX + n
+		if endPos > right+1 {
+			endPos = right + 1
+		}
+		if endPos > lineLen {
+			endPos = lineLen
+		}
+		for x := b.cursorX; x < endPos; x++ {
+			line[x] = blank
+		}
+		b.markDirty()
+		return
 	}
 
 	line := b.screen[b.cursorY]

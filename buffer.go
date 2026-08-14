@@ -194,6 +194,64 @@ type Buffer struct {
 	savedCursorX int
 	savedCursorY int
 
+	// Scroll region (DECSTBM) and origin mode (DECOM). scrollTop/scrollBottom
+	// are 0-based, inclusive, in effective rows. hasScrollRegion is false when
+	// the region spans the full screen (the default); scrollRegionLocked()
+	// resolves the effective bounds. originMode makes CUP/HVP row/col
+	// margin-relative and confines the cursor to the region.
+	scrollTop       int
+	scrollBottom    int
+	hasScrollRegion bool
+	originMode      bool
+
+	// Left/right margins (DECSLRM) and left-right margin mode (DECLRMM, ?69).
+	// marginLeft/marginRight are 0-based inclusive logical columns; hasLRMargins
+	// is false when they span the full width. leftRightMarginMode gates DECSLRM
+	// (and disambiguates CSI s from SCP). Margins are per-screen (swapped with
+	// the alt screen); the mode is terminal-global.
+	marginLeft          int
+	marginRight         int
+	hasLRMargins        bool
+	leftRightMarginMode bool
+
+	// Standard ANSI modes and tab stops.
+	currentProtected bool        // DECSCA: written cells are protected from selective erase
+	insertMode      bool         // IRM (mode 4): printed chars insert (shift right)
+	newLineMode     bool         // LNM (mode 20): output LF also does CR
+	lastPrintedChar rune         // for REP (CSI b)
+	tabStops        map[int]bool // horizontal tab stops (visual columns)
+
+	// Keyboard/interaction modes an input adapter consults to encode keys.
+	appCursorKeys  bool // DECCKM (?1): arrows send ESC O x, not ESC [ x
+	appKeypad      bool // DECKPAM/DECKPNM (ESC =/ESC >): keypad sends ESC O x
+	focusReporting bool // ?1004: report focus in/out as CSI I / CSI O
+	altScrollMode  bool // ?1007: wheel sends arrow keys on the alt screen
+
+	// OSC state: window title (0/1/2) and color overrides (4/10/11/12).
+	windowTitle   string
+	onTitleChange func(string)
+	oscFg         *Color // OSC 10 default-foreground override
+	oscBg         *Color // OSC 11 default-background override
+	oscCursor     *Color // OSC 12 cursor-color override
+	oscPalette    map[int]Color
+
+	// Cell-anchored bitmap images (Sixel) and the sixel display/scroll modes.
+	images           []*PlacedImage
+	nextImageID      int
+	sixelDisplayMode bool // DECSDM (?80)
+	sixelScrolling   bool // ?8452 (cursor lands below the image); default on
+
+	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
+	// fields hold the alternate screen and mainStash holds the primary screen's
+	// context (content, cursor, margins, and its own scrollback), restored on
+	// leave. The alternate screen has its own independent scrollback.
+	onAltScreen bool
+	mainStash   screenState
+
+	// captureScope selects which screen(s) feed the capture content events
+	// (default CaptureMain). OnScreenSwitch is never scope-gated.
+	captureScope CaptureScope
+
 	dirty         bool
 	onDirty       func()
 	onScaleChange func()     // Called when screen scaling modes change
@@ -309,6 +367,7 @@ func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 		screenSplits:        make(map[int]*ScreenSplit),
 		autoWrapMode:        true, // DECAWM default enabled
 		smartWordWrap:       true, // Smart word wrap default enabled
+		sixelScrolling:      true, // sixel images advance the cursor below them
 	}
 	b.initScreen()
 	return b
@@ -474,6 +533,12 @@ func (b *Buffer) Resize(cols, rows int) {
 		return
 	}
 
+	// A resize resets the scroll region to the full screen (matching xterm);
+	// origin mode persists. scrollRegionLocked also self-heals, but clearing
+	// here keeps the stored bounds meaningful.
+	b.hasScrollRegion = false
+	b.scrollTop = 0
+
 	// Calculate logicalHiddenAbove BEFORE resize to track scrollback visibility state
 	oldEffectiveRows := b.EffectiveRows()
 	oldLogicalHiddenAbove := 0
@@ -614,7 +679,7 @@ func (b *Buffer) pushLineToScrollback(line []Cell, info LineInfo) {
 	// is the single chokepoint for every off-screen path — scroll, shrink, and
 	// the scrollback-preserving clear/reset — so the transcript is complete even
 	// past the scrollback cap.
-	if b.captureObserver != nil {
+	if b.captureObserver != nil && b.captureScreenInScope() {
 		b.captureObserver.OnLineOff(line, info)
 	}
 
@@ -811,7 +876,7 @@ func (b *Buffer) SetCaptureLive(enabled bool) {
 // liveEnabled reports whether live-screen events should fire. Caller holds the
 // lock (it is read on the write/cursor path).
 func (b *Buffer) liveEnabled() bool {
-	return b.captureLive && b.captureObserver != nil
+	return b.captureLive && b.captureObserver != nil && b.captureScreenInScope()
 }
 
 // flushLiveWriteRun emits any pending OnWrite run and clears it. Called before

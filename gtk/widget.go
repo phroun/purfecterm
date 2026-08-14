@@ -1055,6 +1055,50 @@ func spriteCoordToPixels(coordinate float64, unitsPerCell int, cellSize int) flo
 }
 
 // renderSprites renders a list of sprites at their positions
+// renderImages blits cell-anchored Sixel images onto the terminal.
+//
+// BEST EFFORT: the gtk toolkit does not build in this environment, so the cairo
+// image-surface calls here (CreateImageSurface / GetData / GetStride / MarkDirty
+// / Flush / SetSourceSurface) are written against the standard gotk3 cairo API
+// and should be verified against your gotk3 version. RGBA is converted to
+// cairo's premultiplied ARGB32 (BGRA byte order on little-endian).
+func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	for _, im := range images {
+		img := im.Image
+		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
+			continue
+		}
+		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, img.W, img.H)
+		data := surface.GetData()
+		stride := surface.GetStride()
+		for y := 0; y < img.H; y++ {
+			for x := 0; x < img.W; x++ {
+				si := (y*img.W + x) * 4
+				r := uint16(img.RGBA[si])
+				g := uint16(img.RGBA[si+1])
+				b := uint16(img.RGBA[si+2])
+				a := uint16(img.RGBA[si+3])
+				di := y*stride + x*4
+				// Premultiply and store as BGRA (ARGB32 little-endian).
+				data[di+0] = byte(b * a / 255)
+				data[di+1] = byte(g * a / 255)
+				data[di+2] = byte(r * a / 255)
+				data[di+3] = byte(a)
+			}
+		}
+		surface.MarkDirty()
+		surface.Flush()
+
+		pixelX := float64(im.Col*charWidth) + float64(terminalLeftPadding) - float64(horizOffsetX*charWidth)
+		pixelY := float64((im.Row + scrollOffsetY) * charHeight)
+		cr.Save()
+		cr.Translate(pixelX, pixelY)
+		cr.SetSourceSurface(surface, 0, 0)
+		cr.Paint()
+		cr.Restore()
+	}
+}
+
 func (w *Widget) renderSprites(cr *cairo.Context, sprites []*purfecterm.Sprite, charWidth, charHeight int, scheme purfecterm.ColorScheme, isDark bool, scrollOffsetY, horizOffsetX int) {
 	if len(sprites) == 0 {
 		return
@@ -2268,6 +2312,9 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 
 	// Render front sprites (overlay on top of text)
 	w.renderSprites(cr, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
+
+	// Render cell-anchored bitmap images (Sixel)
+	w.renderImages(cr, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits overlay specific screen regions with different buffer positions

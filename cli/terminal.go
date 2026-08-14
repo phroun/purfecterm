@@ -685,6 +685,10 @@ func (t *Terminal) SetFocused(focused bool) {
 	t.mu.Unlock()
 
 	if changed {
+		// Focus reporting (?1004): tell the hosted application about the change.
+		if seq := t.buffer.FocusReportSequence(focused); seq != nil {
+			t.Write(seq)
+		}
 		t.renderer.RequestRender()
 		if callback != nil {
 			callback(focused)

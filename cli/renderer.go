@@ -340,6 +340,10 @@ func (r *Renderer) Render() {
 	// Reset attributes
 	r.output.WriteString("\033[0m")
 
+	// Sixel passthrough: re-emit each placed image's raw DCS at its anchor so a
+	// Sixel-capable host terminal draws it.
+	r.emitImagePassthrough(buffer, contentStartX, contentStartY, rows, scrollOffset)
+
 	// Position and show cursor if visible, not scrolled, and focused
 	r.term.mu.Lock()
 	focused := r.term.focused
@@ -356,6 +360,23 @@ func (r *Renderer) Render() {
 
 	// Store current frame
 	r.lastCells = newCells
+}
+
+// emitImagePassthrough re-emits each placed Sixel image's original DCS bytes,
+// positioned at the image's anchor cell, so a Sixel-capable host terminal
+// renders it. Skipped while viewing scrollback.
+func (r *Renderer) emitImagePassthrough(buffer *purfecterm.Buffer, contentStartX, contentStartY, rows, scrollOffset int) {
+	if scrollOffset != 0 {
+		return
+	}
+	for _, im := range buffer.GetImages() {
+		if im.Image == nil || len(im.Image.Raw) == 0 || im.Row < 0 || im.Row >= rows {
+			continue
+		}
+		vx := buffer.LogicalToVisualCol(im.Row, im.Col)
+		r.output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+im.Row+1, contentStartX+vx+1))
+		r.output.Write(im.Image.Raw)
+	}
 }
 
 // renderBorder draws the terminal window border
@@ -644,6 +665,18 @@ func (r *Renderer) RenderToString() string {
 					output.WriteString(cell.Combining)
 				}
 			}
+		}
+	}
+
+	// Sixel passthrough: re-emit each placed image's raw DCS at its anchor.
+	if scrollOffset == 0 {
+		for _, im := range buffer.GetImages() {
+			if im.Image == nil || len(im.Image.Raw) == 0 || im.Row < 0 || im.Row >= rows {
+				continue
+			}
+			vx := buffer.LogicalToVisualCol(im.Row, im.Col)
+			output.WriteString(fmt.Sprintf("\033[%d;%dH", contentStartY+im.Row+1, contentStartX+vx+1))
+			output.Write(im.Image.Raw)
 		}
 	}
 
