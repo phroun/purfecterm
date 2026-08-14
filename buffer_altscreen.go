@@ -39,9 +39,14 @@ type screenState struct {
 	marginRight     int
 	hasLRMargins    bool
 	screenInfo      ScreenInfo
-	logicalCols     int
-	logicalRows     int
-	horizOffset     int
+	// Anchored images belong to the screen they were placed on. Without
+	// stashing them, an alternate-screen application's images stayed behind
+	// on the restored primary screen, and the primary's images bled into the
+	// alternate — each screen redrawing over the other's leftovers.
+	images      []*PlacedImage
+	logicalCols int
+	logicalRows int
+	horizOffset int
 }
 
 // captureScreenState snapshots the active screen's context. Caller holds the lock.
@@ -64,6 +69,7 @@ func (b *Buffer) captureScreenState() screenState {
 		marginRight:     b.marginRight,
 		hasLRMargins:    b.hasLRMargins,
 		screenInfo:      b.screenInfo,
+		images:          b.images,
 		logicalCols:     b.logicalCols,
 		logicalRows:     b.logicalRows,
 		horizOffset:     b.horizOffset,
@@ -90,6 +96,7 @@ func (b *Buffer) restoreScreenState(s screenState) {
 	b.marginRight = s.marginRight
 	b.hasLRMargins = s.hasLRMargins
 	b.screenInfo = s.screenInfo
+	b.images = s.images
 	b.logicalCols = s.logicalCols
 	b.logicalRows = s.logicalRows
 	b.horizOffset = s.horizOffset
@@ -133,6 +140,7 @@ func (b *Buffer) IsAltScreen() bool {
 // empty independent scrollback, home cursor, no scroll region, and origin mode
 // off. Caller holds the lock.
 func (b *Buffer) initAltScreen() {
+	b.images = nil // a fresh screen starts with no anchored images
 	b.logicalCols = 0
 	b.logicalRows = 0
 	rows := b.rows

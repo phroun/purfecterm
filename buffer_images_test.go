@@ -297,3 +297,37 @@ func TestSixelImageDroppedWhenShrinkPushesItOff(t *testing.T) {
 		t.Errorf("image survived at row %d; the shrink pushed it off the top", imgs[0].Row)
 	}
 }
+
+// Anchored images belong to the screen they were placed on. An alternate-screen
+// application's images must not survive back onto the primary screen, and the
+// primary's must be there again when it returns.
+func TestImagesAreStashedWithTheAltScreen(t *testing.T) {
+	b := NewBuffer(40, 12, 100)
+	b.SetCellPixelSize(10, 20)
+	b.SetSixelScrolling(false)
+
+	b.SetCursor(0, 1)
+	b.PlaceSixelImage(&SixelImage{W: 10, H: 20, RGBA: make([]byte, 10*20*4)})
+	if len(b.GetImages()) != 1 {
+		t.Fatal("setup: the primary screen's image is missing")
+	}
+
+	b.EnterAltScreen()
+	if got := len(b.GetImages()); got != 0 {
+		t.Errorf("the alt screen started with %d images, want a clean screen", got)
+	}
+	b.SetCursor(0, 3)
+	b.PlaceSixelImage(&SixelImage{W: 10, H: 20, RGBA: make([]byte, 10*20*4)})
+	if len(b.GetImages()) != 1 {
+		t.Fatal("the alt screen's own image was not placed")
+	}
+
+	b.LeaveAltScreen()
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("after leaving the alt screen there are %d images, want the primary's 1", len(imgs))
+	}
+	if imgs[0].Row != 1 {
+		t.Errorf("the surviving image is at row %d, want the primary's row 1 — the alt screen's leaked", imgs[0].Row)
+	}
+}
