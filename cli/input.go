@@ -74,6 +74,10 @@ func (h *InputHandler) handleKey(key string) bool {
 
 	// Convert key to bytes for the callback
 	keyBytes := keyToBytes(key)
+	// DECCKM: unmodified cursor keys use the SS3 (ESC O) form in application mode.
+	if h.term.buffer != nil && h.term.buffer.IsApplicationCursorKeys() {
+		keyBytes = applyAppCursorKeys(key, keyBytes)
+	}
 	if callback != nil && len(keyBytes) > 0 {
 		if callback(keyBytes) {
 			return true // Consumed by callback
@@ -155,6 +159,18 @@ func (h *InputHandler) sendToPTY(data []byte) {
 	if pty != nil {
 		pty.Write(data)
 	}
+}
+
+// applyAppCursorKeys rewrites an unmodified cursor key's CSI introducer to SS3
+// (ESC [ x -> ESC O x) for DECCKM application cursor mode.
+func applyAppCursorKeys(key string, b []byte) []byte {
+	switch key {
+	case "Up", "Down", "Left", "Right", "Home", "End":
+		if len(b) == 3 && b[0] == 0x1b && b[1] == '[' {
+			return []byte{0x1b, 'O', b[2]}
+		}
+	}
+	return b
 }
 
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.

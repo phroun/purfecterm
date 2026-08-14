@@ -220,6 +220,12 @@ type Buffer struct {
 	lastPrintedChar rune         // for REP (CSI b)
 	tabStops        map[int]bool // horizontal tab stops (visual columns)
 
+	// Keyboard/interaction modes an input adapter consults to encode keys.
+	appCursorKeys  bool // DECCKM (?1): arrows send ESC O x, not ESC [ x
+	appKeypad      bool // DECKPAM/DECKPNM (ESC =/ESC >): keypad sends ESC O x
+	focusReporting bool // ?1004: report focus in/out as CSI I / CSI O
+	altScrollMode  bool // ?1007: wheel sends arrow keys on the alt screen
+
 	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
 	// fields hold the alternate screen and mainStash holds the primary screen's
 	// context (content, cursor, margins, and its own scrollback), restored on

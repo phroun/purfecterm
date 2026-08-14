@@ -322,6 +322,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.resetTabStops()
 		p.buffer.SetInsertMode(false)
 		p.buffer.SetNewLineMode(false)
+		p.buffer.resetKeyModes()
 		p.state = stateGround
 	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
 		p.buffer.LineFeed()
@@ -334,8 +335,10 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.ReverseIndex()
 		p.state = stateGround
 	case '=': // DECKPAM - Keypad Application Mode
+		p.buffer.SetApplicationKeypad(true)
 		p.state = stateGround
 	case '>': // DECKPNM - Keypad Numeric Mode
+		p.buffer.SetApplicationKeypad(false)
 		p.state = stateGround
 	default:
 		// Unknown escape sequence, return to ground state
@@ -726,10 +729,16 @@ func (p *Parser) decrqmStatus(mode int) int {
 		return 2
 	}
 	switch mode {
+	case 1: // DECCKM - Application cursor keys
+		return set(p.buffer.IsApplicationCursorKeys())
 	case 6: // DECOM - Origin Mode
 		return set(p.buffer.IsOriginMode())
 	case 69: // DECLRMM - Left/Right Margin Mode
 		return set(p.buffer.IsLeftRightMarginMode())
+	case 1004: // Focus reporting
+		return set(p.buffer.IsFocusReporting())
+	case 1007: // Alternate scroll mode
+		return set(p.buffer.IsAltScrollMode())
 	case 47, 1047, 1049: // Alternate screen buffer
 		return set(p.buffer.IsAltScreen())
 	case 1000, 1002, 1003:
@@ -1108,7 +1117,11 @@ func (p *Parser) executePrivateModeSet(set bool) {
 				}
 			}
 		case 1: // DECCKM - Application cursor keys
-			// Not yet implemented
+			p.buffer.SetApplicationCursorKeys(set)
+		case 1004: // Focus reporting
+			p.buffer.SetFocusReporting(set)
+		case 1007: // Alternate scroll mode (wheel -> arrows on the alt screen)
+			p.buffer.SetAltScrollMode(set)
 		case 7: // DECAWM - Auto-wrap mode
 			// h = enable auto-wrap (cursor wraps to next line), l = disable (stay at last column)
 			p.buffer.SetAutoWrapMode(set)

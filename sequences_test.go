@@ -135,3 +135,45 @@ func TestPositionSequences(t *testing.T) {
 		t.Fatalf("VPR -> %d, want 5", y)
 	}
 }
+
+// Keyboard/interaction modes are tracked, reportable via DECRQM, and reset by RIS.
+func TestKeyModes(t *testing.T) {
+	b := NewBuffer(20, 5, 100)
+	p, resp := respParser(b)
+
+	p.Parse([]byte("\x1b[?1h")) // DECCKM
+	if !b.IsApplicationCursorKeys() {
+		t.Fatal("DECCKM should be on")
+	}
+	p.Parse([]byte("\x1b[?1$p")) // DECRQM query
+	if *resp != "\x1b[?1;1$y" {
+		t.Fatalf("DECRQM ?1 = %q, want \\e[?1;1$y", *resp)
+	}
+
+	p.Parse([]byte("\x1b=")) // DECKPAM
+	if !b.IsApplicationKeypad() {
+		t.Fatal("application keypad should be on")
+	}
+	p.Parse([]byte("\x1b>")) // DECKPNM
+	if b.IsApplicationKeypad() {
+		t.Fatal("application keypad should be off")
+	}
+
+	p.Parse([]byte("\x1b[?1004h")) // focus reporting
+	if string(b.FocusReportSequence(true)) != "\x1b[I" {
+		t.Fatal("focus-in sequence wrong")
+	}
+	if string(b.FocusReportSequence(false)) != "\x1b[O" {
+		t.Fatal("focus-out sequence wrong")
+	}
+
+	p.Parse([]byte("\x1b[?1007h")) // alternate scroll
+	if !b.IsAltScrollMode() {
+		t.Fatal("alt scroll should be on")
+	}
+
+	p.Parse([]byte("\x1bc")) // RIS
+	if b.IsApplicationCursorKeys() || b.IsFocusReporting() || b.IsAltScrollMode() || b.IsApplicationKeypad() {
+		t.Fatal("RIS should reset key modes")
+	}
+}
