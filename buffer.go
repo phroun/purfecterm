@@ -123,12 +123,23 @@ type Buffer struct {
 	mouseTrackingMode  int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
 	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
 
-	// Cell size in device pixels, reported to a hosted app via CSI 16 t and used
-	// as the unit for SGR-Pixels (?1016) mouse reports. 0 = unknown: a headless
-	// buffer has no inherent pixel size, so a renderer that wants pixel geometry
-	// pushes its cell size here (SetCellPixelSize).
+	// Cell size in device pixels: the REAL geometry a renderer draws into.
+	// Reported by CSI 14 t / CSI 16 t and used to size and place images. 0 =
+	// unknown: a headless buffer has no inherent pixel size, so a renderer that
+	// wants pixel geometry pushes its cell size here (SetCellPixelSize).
 	cellPixelWidth  int
 	cellPixelHeight int
+
+	// The unit a renderer encodes SGR-Pixels (?1016) mouse coordinates in, when
+	// that is deliberately NOT the real cell size. These are two different jobs
+	// and one number cannot do both: image geometry needs the truth, while
+	// pointer reporting sometimes wants a fixed synthetic grid — a renderer
+	// whose real cell size moves with font zoom or fractional scaling can pin a
+	// constant number of sub-units per cell so the integer cell is always
+	// recoverable, which rounding against real pixels cannot promise. 0 falls
+	// back to the cell size, which is what an ordinary renderer wants.
+	pointerPixelWidth  int
+	pointerPixelHeight int
 
 	currentFg        Color
 	currentBg            Color
@@ -1019,16 +1030,55 @@ func (b *Buffer) GetMouseEncodingMode() int {
 	return b.mouseEncodingMode
 }
 
-// SetCellPixelSize records the terminal's cell size in device pixels. A
+// SetCellPixelSize records the terminal's REAL cell size in device pixels. A
 // headless buffer has no inherent pixel size; a renderer that knows its cell
-// geometry sets it here so the terminal can answer CSI 16 t and so SGR-Pixels
-// (?1016) mouse reports carry meaningful pixel coordinates. Zero leaves the
-// size unknown.
+// geometry sets it here so the terminal can answer CSI 14 t / CSI 16 t, and so
+// images can be sized and placed against the grid they are drawn into. Zero
+// leaves the size unknown.
+//
+// This must be the truth, not a convenient scale: a program reads CSI 16 t to
+// decide how many pixels to render an image at, and PlaceImage divides by it to
+// work out how many rows that image covers. For a synthetic pointer-reporting
+// grid, see SetPointerPixelUnit — that is a separate axis on purpose.
 func (b *Buffer) SetCellPixelSize(width, height int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cellPixelWidth = width
 	b.cellPixelHeight = height
+}
+
+// SetPointerPixelUnit records the unit a renderer encodes SGR-Pixels (?1016)
+// mouse coordinates in, for a renderer that deliberately does not report real
+// pixels there. Zero (the default) means pointer coordinates are in the real
+// cell size, which is what an ordinary renderer wants.
+//
+// This exists because the two jobs genuinely conflict. Image geometry needs the
+// real cell size or images come out the wrong size and reserve the wrong number
+// of rows. Pointer reporting sometimes wants a FIXED grid instead: a renderer
+// whose real cell size moves with font zoom or fractional scaling can pin a
+// constant number of sub-units per cell, so the integer cell is always
+// recoverable from a coordinate — a guarantee rounding against real device
+// pixels cannot make. Setting one no longer disturbs the other.
+func (b *Buffer) SetPointerPixelUnit(width, height int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pointerPixelWidth = width
+	b.pointerPixelHeight = height
+}
+
+// GetPointerPixelUnit returns the unit for ?1016 pointer coordinates, falling
+// back per-axis to the real cell size when no synthetic grid is set.
+func (b *Buffer) GetPointerPixelUnit() (width, height int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	width, height = b.pointerPixelWidth, b.pointerPixelHeight
+	if width <= 0 {
+		width = b.cellPixelWidth
+	}
+	if height <= 0 {
+		height = b.cellPixelHeight
+	}
+	return width, height
 }
 
 // GetCellPixelSize returns the cell size in device pixels (0,0 when unset).
