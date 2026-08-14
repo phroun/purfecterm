@@ -80,12 +80,32 @@ func (b *Buffer) IsSixelScrolling() bool {
 	return b.sixelScrolling
 }
 
-// PlaceSixelImage anchors a decoded image at the cursor, leaves the cursor on
-// the image's last row per sixel scrolling, and scrolls the screen if the image
-// runs past the bottom.
+// PlaceSixelImage anchors a decoded Sixel image at the cursor. Sixel carries
+// its own pixels and asks for no resizing, so it is drawn at the size it
+// decoded to; see PlaceImage for the rest of the behavior.
 func (b *Buffer) PlaceSixelImage(img *SixelImage) {
+	if img == nil {
+		return
+	}
+	b.PlaceImage(img, img.W, img.H)
+}
+
+// PlaceImage anchors a decoded bitmap at the cursor, to be drawn at destW x
+// destH terminal pixels, leaves the cursor on the image's last row per sixel
+// scrolling, and scrolls the screen if the image runs past the bottom. A
+// non-positive destination falls back to the bitmap's own size.
+//
+// This is the entry point for any image source — Sixel, the iTerm2 inline
+// images protocol, or a caller placing pixels directly.
+func (b *Buffer) PlaceImage(img *Bitmap, destW, destH int) {
 	if img == nil || img.W == 0 || img.H == 0 {
 		return
+	}
+	if destW <= 0 {
+		destW = img.W
+	}
+	if destH <= 0 {
+		destH = img.H
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -97,8 +117,6 @@ func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 	if ch <= 0 {
 		ch = 20
 	}
-	// Sixel is drawn at the size it decoded to: its pixels are the image.
-	destW, destH := img.W, img.H
 	cellsW := (destW + cw - 1) / cw
 	cellsH := (destH + ch - 1) / ch
 

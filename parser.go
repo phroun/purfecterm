@@ -1259,6 +1259,8 @@ func (p *Parser) executeOSC() {
 		p.executeOSCColorFgBg(p.oscCmd, args)
 	case 52: // Clipboard (OSC 52)
 		p.executeOSCClipboard(args)
+	case 1337: // iTerm2 inline images
+		p.executeOSCImage(args)
 	case 7000: // Palette management
 		p.executeOSCPalette(args)
 	case 7001: // Glyph management
