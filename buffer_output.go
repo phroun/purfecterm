@@ -542,6 +542,7 @@ func (b *Buffer) ClearScreen() {
 	}
 	b.updateScreenInfo() // Update screen default attributes
 	b.initScreen()
+	b.clearImagesLocked()
 
 	// Reset cursor to top-left
 	b.trackCursorYMove(0)

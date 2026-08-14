@@ -192,6 +192,7 @@ func (b *Buffer) scrollRegionUp(top, bottom int) {
 	}
 	b.screen[bottom] = b.makeEmptyLine()
 	b.lineInfos[bottom] = b.makeDefaultLineInfo()
+	b.shiftImagesLocked(-1, top, bottom)
 	b.lastScrollCausingEvent = time.Now()
 	b.lastCursorMoveDir = 1 // toward newer content
 	b.markDirty()
@@ -218,6 +219,7 @@ func (b *Buffer) scrollRegionDown(top, bottom int) {
 	}
 	b.screen[top] = b.makeEmptyLine()
 	b.lineInfos[top] = b.makeDefaultLineInfo()
+	b.shiftImagesLocked(1, top, bottom)
 	b.lastCursorMoveDir = -1
 	b.markDirty()
 }

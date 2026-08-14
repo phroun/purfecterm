@@ -776,6 +776,10 @@ func (p *Parser) decrqmStatus(mode int) int {
 		return set(p.buffer.IsCursorVisible())
 	case 69: // DECLRMM - Left/Right Margin Mode
 		return set(p.buffer.IsLeftRightMarginMode())
+	case 80: // DECSDM - Sixel Display Mode
+		return set(p.buffer.IsSixelDisplayMode())
+	case 8452: // Sixel scrolling
+		return set(p.buffer.IsSixelScrolling())
 	case 1004: // Focus reporting
 		return set(p.buffer.IsFocusReporting())
 	case 1007: // Alternate scroll mode
@@ -1077,6 +1081,10 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			p.buffer.SetOriginMode(set)
 		case 69: // DECLRMM - Left/Right Margin Mode (enables DECSLRM)
 			p.buffer.SetLeftRightMarginMode(set)
+		case 80: // DECSDM - Sixel Display Mode
+			p.buffer.SetSixelDisplayMode(set)
+		case 8452: // Sixel scrolling (cursor lands below the image)
+			p.buffer.SetSixelScrolling(set)
 		case 25: // DECTCEM - Cursor visibility
 			p.buffer.SetCursorVisible(set)
 		case 47, 1047, 1049: // Alternate screen buffer

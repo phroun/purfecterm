@@ -235,6 +235,12 @@ type Buffer struct {
 	oscCursor     *Color // OSC 12 cursor-color override
 	oscPalette    map[int]Color
 
+	// Cell-anchored bitmap images (Sixel) and the sixel display/scroll modes.
+	images           []*PlacedImage
+	nextImageID      int
+	sixelDisplayMode bool // DECSDM (?80)
+	sixelScrolling   bool // ?8452 (cursor lands below the image); default on
+
 	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
 	// fields hold the alternate screen and mainStash holds the primary screen's
 	// context (content, cursor, margins, and its own scrollback), restored on
@@ -361,6 +367,7 @@ func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 		screenSplits:        make(map[int]*ScreenSplit),
 		autoWrapMode:        true, // DECAWM default enabled
 		smartWordWrap:       true, // Smart word wrap default enabled
+		sixelScrolling:      true, // sixel images advance the cursor below them
 	}
 	b.initScreen()
 	return b

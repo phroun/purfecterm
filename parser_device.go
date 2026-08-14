@@ -32,12 +32,17 @@ func (p *Parser) handleDCSEsc(b byte) {
 	p.handleDCS(b)
 }
 
-// executeDCS dispatches a completed DCS string. Only DECRQSS (DCS $ q ... ST) is
-// handled today; other device control strings are ignored.
+// executeDCS dispatches a completed DCS string: DECRQSS (DCS $ q ... ST) or
+// Sixel (DCS <P1;P2;P3> q <data> ST). Other device control strings are ignored.
 func (p *Parser) executeDCS() {
 	s := p.dcsBuf.String()
 	if strings.HasPrefix(s, "$q") {
 		p.executeDECRQSS(s[2:])
+		return
+	}
+	if params, data, ok := stripSixelIntro(s); ok {
+		bg := p.buffer.EffectiveDefaultBackground()
+		p.buffer.PlaceSixelImage(DecodeSixel(params, data, bg))
 	}
 }
 
