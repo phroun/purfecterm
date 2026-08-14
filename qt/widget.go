@@ -915,6 +915,16 @@ func (w *Widget) updateFontMetrics() {
 	if w.charHeight < 1 {
 		w.charHeight = effectiveSize * 12 / 10
 	}
+
+	// Tell the emulator the cell size it is drawing into. Without this the
+	// buffer has no idea and falls back to a nominal 10x20, which shows up two
+	// ways: CSI 14 t / CSI 16 t answer 0x0, so a program like chafa sizes its
+	// image for a cell we do not have; and PlaceSixelImage reserves
+	// imageHeight/20 rows for an image that occupies imageHeight/charHeight of
+	// them, leaving a blank gap under every image.
+	if w.buffer != nil {
+		w.buffer.SetCellPixelSize(w.charWidth, w.charHeight)
+	}
 }
 
 // renderCustomGlyph renders a custom glyph for a cell at the specified position

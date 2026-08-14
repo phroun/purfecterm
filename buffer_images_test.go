@@ -26,6 +26,56 @@ func placeTestImage(t *testing.T, b *Buffer, col, row, cellsHigh int) *PlacedIma
 	return imgs[0]
 }
 
+// The cursor lands immediately under the image: an image N cells tall advances
+// it exactly N rows, leaving no blank gap before whatever the program prints
+// next. N follows the cell size the renderer reported, which is why a widget
+// that never calls SetCellPixelSize — leaving the nominal 10x20 fallback in
+// place while drawing into a taller cell — reserves too many rows and opens a
+// gap under every image.
+func TestSixelImageAdvancesCursorByItsOwnHeight(t *testing.T) {
+	for _, cellH := range []int{16, 20, 40} {
+		b := NewBuffer(40, 30, 200)
+		b.SetCellPixelSize(10, cellH)
+		b.SetCursor(0, 0)
+		// Exactly 4 cells tall at this cell size.
+		b.PlaceSixelImage(&SixelImage{
+			W: 10, H: 4 * cellH, RGBA: make([]byte, 10*4*cellH*4),
+		})
+
+		imgs := b.GetImages()
+		if len(imgs) != 1 {
+			t.Fatalf("cell height %d: placed %d images, want 1", cellH, len(imgs))
+		}
+		if imgs[0].CellsHigh != 4 {
+			t.Errorf("cell height %d: CellsHigh = %d, want 4", cellH, imgs[0].CellsHigh)
+		}
+		if _, cy := b.GetCursor(); cy != 4 {
+			t.Errorf("cell height %d: cursor landed on row %d, want 4 — %d blank row(s) under the image",
+				cellH, cy, cy-4)
+		}
+	}
+}
+
+// A partial last row still counts as a row: the cursor clears the image rather
+// than landing inside it.
+func TestSixelImagePartialRowRoundsUp(t *testing.T) {
+	b := NewBuffer(40, 30, 200)
+	b.SetCellPixelSize(10, 20)
+	b.SetCursor(0, 0)
+	b.PlaceSixelImage(&SixelImage{W: 10, H: 50, RGBA: make([]byte, 10*50*4)}) // 2.5 cells
+
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("placed %d images, want 1", len(imgs))
+	}
+	if imgs[0].CellsHigh != 3 {
+		t.Errorf("CellsHigh = %d, want 3 (50px over a 20px cell)", imgs[0].CellsHigh)
+	}
+	if _, cy := b.GetCursor(); cy != 3 {
+		t.Errorf("cursor landed on row %d, want 3", cy)
+	}
+}
+
 // An image rides the text up and is dropped only once its LAST row has left the
 // screen. The anchor passing above row 0 is the interesting part: the image is
 // still partly on screen there and must keep moving, or it sticks to the top
