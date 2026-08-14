@@ -35,6 +35,9 @@ type screenState struct {
 	scrollBottom    int
 	hasScrollRegion bool
 	originMode      bool
+	marginLeft      int
+	marginRight     int
+	hasLRMargins    bool
 	screenInfo      ScreenInfo
 	logicalCols     int
 	logicalRows     int
@@ -57,6 +60,9 @@ func (b *Buffer) captureScreenState() screenState {
 		scrollBottom:    b.scrollBottom,
 		hasScrollRegion: b.hasScrollRegion,
 		originMode:      b.originMode,
+		marginLeft:      b.marginLeft,
+		marginRight:     b.marginRight,
+		hasLRMargins:    b.hasLRMargins,
 		screenInfo:      b.screenInfo,
 		logicalCols:     b.logicalCols,
 		logicalRows:     b.logicalRows,
@@ -80,6 +86,9 @@ func (b *Buffer) restoreScreenState(s screenState) {
 	b.scrollBottom = s.scrollBottom
 	b.hasScrollRegion = s.hasScrollRegion
 	b.originMode = s.originMode
+	b.marginLeft = s.marginLeft
+	b.marginRight = s.marginRight
+	b.hasLRMargins = s.hasLRMargins
 	b.screenInfo = s.screenInfo
 	b.logicalCols = s.logicalCols
 	b.logicalRows = s.logicalRows
@@ -144,6 +153,9 @@ func (b *Buffer) initAltScreen() {
 	b.scrollBottom = rows - 1
 	b.hasScrollRegion = false
 	b.originMode = false
+	b.marginLeft = 0
+	b.marginRight = b.cols - 1
+	b.hasLRMargins = false
 	b.horizOffset = 0
 }
 

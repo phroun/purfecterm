@@ -204,6 +204,16 @@ type Buffer struct {
 	hasScrollRegion bool
 	originMode      bool
 
+	// Left/right margins (DECSLRM) and left-right margin mode (DECLRMM, ?69).
+	// marginLeft/marginRight are 0-based inclusive logical columns; hasLRMargins
+	// is false when they span the full width. leftRightMarginMode gates DECSLRM
+	// (and disambiguates CSI s from SCP). Margins are per-screen (swapped with
+	// the alt screen); the mode is terminal-global.
+	marginLeft          int
+	marginRight         int
+	hasLRMargins        bool
+	leftRightMarginMode bool
+
 	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
 	// fields hold the alternate screen and mainStash holds the primary screen's
 	// context (content, cursor, margins, and its own scrollback), restored on

@@ -130,15 +130,25 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	// Handle line wrap (DECAWM mode 7)
 	// If visual width wrap is enabled, wrap based on accumulated visual width
 	// Otherwise, wrap based on cell count (traditional behavior)
+	// With left/right margins the wrap boundary is the right margin and wrapping
+	// returns to the left margin, when the cursor is inside the box (including
+	// the just-past-right pending-wrap column). Otherwise it is the screen edge.
+	wrapLimit := effectiveCols
+	wrapToCol := 0
+	if left, right, active := b.lrMarginsLocked(); active && b.cursorX >= left && b.cursorX <= right+1 {
+		wrapLimit = right + 1
+		wrapToCol = left
+	}
+
 	shouldWrap := false
 	if (b.visualWidthWrap && b.currentFlexWidth) || !b.currentFlexWidth {
 		// Visual width wrap: standard mode always wraps on accumulated visual
 		// width (the wcwidth contract); flex mode only under ?7028.
 		currentVisualWidth := b.getLineVisualWidth(b.cursorY, b.cursorX)
-		shouldWrap = (currentVisualWidth + charWidth) > float64(effectiveCols)
+		shouldWrap = (currentVisualWidth + charWidth) > float64(wrapLimit)
 	} else {
 		// Traditional cell-count wrap
-		shouldWrap = b.cursorX >= effectiveCols
+		shouldWrap = b.cursorX >= wrapLimit
 	}
 
 	if shouldWrap {
@@ -226,14 +236,16 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					b.cursorX = leadingSpaces
 				}
 			} else {
-				// Standard auto-wrap: move to next line (region-aware).
+				// Standard auto-wrap: move to next line (region-aware), returning
+				// to the left margin (column 0 when no left margin is set).
 				b.setHorizMoveDir(-1, false)
-				b.cursorX = 0
+				b.cursorX = wrapToCol
 				b.advanceLineInternal()
 			}
 		} else {
-			// Auto-wrap disabled (DECAWM off): stay at last column, overwrite character
-			b.cursorX = effectiveCols - 1
+			// Auto-wrap disabled (DECAWM off): stay at the last column (the right
+			// margin when one is set), overwriting.
+			b.cursorX = wrapLimit - 1
 		}
 	}
 
@@ -390,7 +402,13 @@ func (b *Buffer) CarriageReturn() {
 		b.flushLiveWriteRun()
 	}
 	b.setHorizMoveDir(-1, false) // Moving left
-	b.cursorX = 0
+	// With left/right margins, CR returns to the left margin when the cursor is
+	// at or right of it; otherwise to column 0.
+	if left, _, active := b.lrMarginsLocked(); active && b.cursorX >= left {
+		b.cursorX = left
+	} else {
+		b.cursorX = 0
+	}
 	if b.liveEnabled() {
 		b.captureObserver.OnCursorMove(b.cursorX, b.cursorY)
 	}
@@ -688,6 +706,20 @@ func (b *Buffer) InsertLines(n int) {
 	if bottom >= len(b.screen) {
 		bottom = len(b.screen) - 1
 	}
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		// IL is confined to the margin box; a no-op if the cursor is outside it.
+		if b.cursorX < left || b.cursorX > right {
+			return
+		}
+		for i := 0; i < n; i++ {
+			for y := bottom; y > b.cursorY; y-- {
+				b.copyRowWindow(y-1, y, left, right)
+			}
+			b.blankRowWindow(b.cursorY, left, right)
+		}
+		b.markDirty()
+		return
+	}
 	for i := 0; i < n; i++ {
 		// Shift [cursorY..bottom-1] down to [cursorY+1..bottom]; lines pushed
 		// past the bottom margin are lost.
@@ -712,6 +744,19 @@ func (b *Buffer) DeleteLines(n int) {
 	}
 	if bottom >= len(b.screen) {
 		bottom = len(b.screen) - 1
+	}
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX < left || b.cursorX > right {
+			return
+		}
+		for i := 0; i < n; i++ {
+			for y := b.cursorY; y < bottom; y++ {
+				b.copyRowWindow(y+1, y, left, right)
+			}
+			b.blankRowWindow(bottom, left, right)
+		}
+		b.markDirty()
+		return
 	}
 	for i := 0; i < n; i++ {
 		// Shift [cursorY+1..bottom] up to [cursorY..bottom-1]; blank the bottom.
@@ -739,6 +784,26 @@ func (b *Buffer) DeleteChars(n int) {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnDeleteChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
 	}
+
+	// With a right margin, DCH shifts cells left only within [cursorX, right];
+	// blanks enter at the right margin and columns beyond it are untouched.
+	if _, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX <= right {
+			b.ensureLineLength(b.cursorY, right+1)
+			line := b.screen[b.cursorY]
+			blank := b.currentDefaultCell()
+			for x := b.cursorX; x <= right; x++ {
+				if x+n <= right {
+					line[x] = line[x+n]
+				} else {
+					line[x] = blank
+				}
+			}
+		}
+		b.markDirty()
+		return
+	}
+
 	line := b.screen[b.cursorY]
 	lineLen := len(line)
 
@@ -768,6 +833,25 @@ func (b *Buffer) InsertChars(n int) {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnInsertChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
+	}
+
+	// With a right margin, ICH shifts cells right only within [cursorX, right];
+	// cells pushed past the right margin are lost, columns beyond it untouched.
+	if left, right, lrActive := b.lrMarginsLocked(); lrActive {
+		if b.cursorX >= left && b.cursorX <= right {
+			b.ensureLineLength(b.cursorY, right+1)
+			line := b.screen[b.cursorY]
+			blank := b.currentDefaultCell()
+			for x := right; x >= b.cursorX; x-- {
+				if x-n >= b.cursorX {
+					line[x] = line[x-n]
+				} else {
+					line[x] = blank
+				}
+			}
+		}
+		b.markDirty()
+		return
 	}
 
 	// Ensure line is long enough
@@ -806,6 +890,25 @@ func (b *Buffer) EraseChars(n int) {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 		b.captureObserver.OnEraseChars(b.cursorX, b.cursorY, n, b.currentPenSGR())
+	}
+
+	// With a right margin, ECH does not blank past it.
+	if _, right, lrActive := b.lrMarginsLocked(); lrActive {
+		line := b.screen[b.cursorY]
+		lineLen := len(line)
+		blank := b.currentDefaultCell()
+		endPos := b.cursorX + n
+		if endPos > right+1 {
+			endPos = right + 1
+		}
+		if endPos > lineLen {
+			endPos = lineLen
+		}
+		for x := b.cursorX; x < endPos; x++ {
+			line[x] = blank
+		}
+		b.markDirty()
+		return
 	}
 
 	line := b.screen[b.cursorY]

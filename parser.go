@@ -560,8 +560,12 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.executePrivateModeSet(false)
 		}
 
-	case 's': // SCP - Save Cursor Position
-		p.buffer.SaveCursor()
+	case 's': // DECSLRM (CSI Pl ; Pr s) when DECLRMM is set, else SCP (Save Cursor)
+		if p.csiPrivate == 0 && p.buffer.IsLeftRightMarginMode() {
+			p.buffer.SetLeftRightMargins(p.getParam(0, 1), p.getParam(1, 0))
+		} else {
+			p.buffer.SaveCursor()
+		}
 
 	case 'u': // RCP - Restore Cursor Position
 		p.buffer.RestoreCursor()
@@ -690,6 +694,8 @@ func (p *Parser) decrqmStatus(mode int) int {
 	switch mode {
 	case 6: // DECOM - Origin Mode
 		return set(p.buffer.IsOriginMode())
+	case 69: // DECLRMM - Left/Right Margin Mode
+		return set(p.buffer.IsLeftRightMarginMode())
 	case 47, 1047, 1049: // Alternate screen buffer
 		return set(p.buffer.IsAltScreen())
 	case 1000, 1002, 1003:
@@ -973,6 +979,8 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			p.buffer.SetDarkTheme(!set)
 		case 6: // DECOM - Origin Mode (cursor addressing relative to scroll region)
 			p.buffer.SetOriginMode(set)
+		case 69: // DECLRMM - Left/Right Margin Mode (enables DECSLRM)
+			p.buffer.SetLeftRightMarginMode(set)
 		case 25: // DECTCEM - Cursor visibility
 			p.buffer.SetCursorVisible(set)
 		case 47, 1047, 1049: // Alternate screen buffer

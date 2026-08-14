@@ -91,6 +91,10 @@ func (b *Buffer) ResetScrollRegion() {
 	b.scrollTop = 0
 	b.scrollBottom = b.EffectiveRows() - 1
 	b.originMode = false
+	b.hasLRMargins = false
+	b.marginLeft = 0
+	b.marginRight = b.EffectiveCols() - 1
+	b.leftRightMarginMode = false
 	b.markDirty()
 }
 
@@ -125,6 +129,7 @@ func (b *Buffer) IsOriginMode() bool {
 func (b *Buffer) SetCursorPosition(col, row int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	left, right, lrActive := b.lrMarginsLocked()
 	if b.originMode {
 		top, bottom := b.scrollRegionLocked()
 		row += top
@@ -142,6 +147,17 @@ func (b *Buffer) SetCursorPosition(col, row int) {
 		}
 		col = b.visualToLogicalLocked(r, col)
 	}
+	// Under origin mode the column is relative to the left margin and confined
+	// to the margin box.
+	if b.originMode && lrActive {
+		col += left
+		if col < left {
+			col = left
+		}
+		if col > right {
+			col = right
+		}
+	}
 	b.setCursorInternal(col, row)
 }
 
@@ -154,6 +170,15 @@ func (b *Buffer) scrollRegionUp(top, bottom int) {
 	}
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
+	}
+	if left, right, active := b.lrMarginsLocked(); active {
+		// Left/right margins in effect: scroll only the rectangle, leaving the
+		// columns outside untouched. A boxed scroll never reaches scrollback.
+		b.scrollRectUp(top, bottom, left, right)
+		b.lastScrollCausingEvent = time.Now()
+		b.lastCursorMoveDir = 1
+		b.markDirty()
+		return
 	}
 	if top == 0 && bottom == b.EffectiveRows()-1 {
 		b.pushLineToScrollback(b.screen[top], b.lineInfos[top])
@@ -180,6 +205,12 @@ func (b *Buffer) scrollRegionDown(top, bottom int) {
 	}
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
+	}
+	if left, right, active := b.lrMarginsLocked(); active {
+		b.scrollRectDown(top, bottom, left, right)
+		b.lastCursorMoveDir = -1
+		b.markDirty()
+		return
 	}
 	for y := bottom; y > top; y-- {
 		b.screen[y] = b.screen[y-1]
@@ -226,4 +257,155 @@ func (b *Buffer) ReverseIndex() {
 	}
 	b.reverseLineInternal()
 	b.markDirty()
+}
+
+// --- Left/right margins (DECLRMM ?69 + DECSLRM) ---
+//
+// Margins are stored as 0-based inclusive LOGICAL columns. Under the standard
+// (wcwidth) contract narrow content has logical == visual, so for the realistic
+// use of DECSLRM — side-by-side ASCII panes, boxes — these are exactly the
+// visual columns the app named. Wide glyphs straddling a margin (DECSLRM's
+// undefined corner) stay self-consistent rather than perfectly visual.
+
+// lrMarginsLocked resolves the effective left/right margin columns. active is
+// false when the margins span the full width. Caller holds the lock.
+func (b *Buffer) lrMarginsLocked() (left, right int, active bool) {
+	cols := b.EffectiveCols()
+	if !b.hasLRMargins {
+		return 0, cols - 1, false
+	}
+	left = b.marginLeft
+	right = b.marginRight
+	if left < 0 {
+		left = 0
+	}
+	if right >= cols {
+		right = cols - 1
+	}
+	if left >= right {
+		return 0, cols - 1, false
+	}
+	return left, right, true
+}
+
+// GetLeftRightMargins returns the effective 0-based inclusive margin columns.
+func (b *Buffer) GetLeftRightMargins() (left, right int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	left, right, _ = b.lrMarginsLocked()
+	return left, right
+}
+
+// SetLeftRightMarginMode implements DECLRMM (CSI ? 69 h/l). Disabling it also
+// clears any left/right margins (they cannot exist without the mode).
+func (b *Buffer) SetLeftRightMarginMode(on bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.leftRightMarginMode = on
+	if !on {
+		b.hasLRMargins = false
+		b.marginLeft = 0
+		b.marginRight = b.EffectiveCols() - 1
+	}
+	b.markDirty()
+}
+
+// IsLeftRightMarginMode reports whether DECLRMM is active.
+func (b *Buffer) IsLeftRightMarginMode() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.leftRightMarginMode
+}
+
+// SetLeftRightMargins implements DECSLRM (CSI Pl ; Pr s). Arguments are 1-based;
+// a right of 0 (or omitted) means the last column. Ignored unless DECLRMM is
+// enabled or the region is invalid (left >= right). DECSLRM homes the cursor.
+func (b *Buffer) SetLeftRightMargins(left, right int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.leftRightMarginMode {
+		return
+	}
+	cols := b.EffectiveCols()
+	l := left - 1
+	var r int
+	if right <= 0 {
+		r = cols - 1
+	} else {
+		r = right - 1
+	}
+	if l < 0 {
+		l = 0
+	}
+	if r >= cols {
+		r = cols - 1
+	}
+	if l >= r || (l == 0 && r == cols-1) {
+		b.hasLRMargins = false
+		b.marginLeft = 0
+		b.marginRight = cols - 1
+	} else {
+		b.hasLRMargins = true
+		b.marginLeft = l
+		b.marginRight = r
+	}
+
+	// DECSLRM homes the cursor (region origin under DECOM, else screen home).
+	if b.originMode {
+		top, _ := b.scrollRegionLocked()
+		b.cursorY = top
+		b.cursorX = b.marginLeft
+	} else {
+		b.cursorX = 0
+		b.cursorY = 0
+	}
+	b.setHorizMoveDir(0, true)
+	b.markDirty()
+}
+
+// copyRowWindow copies the logical column window [left,right] from row src into
+// row dst, padding dst first. Caller holds the lock.
+func (b *Buffer) copyRowWindow(src, dst, left, right int) {
+	b.ensureLineLength(dst, right+1)
+	srcLine := b.screen[src]
+	dstLine := b.screen[dst]
+	blank := b.currentDefaultCell()
+	for x := left; x <= right; x++ {
+		if x < len(srcLine) {
+			dstLine[x] = srcLine[x]
+		} else {
+			dstLine[x] = blank
+		}
+	}
+}
+
+// blankRowWindow blanks the logical column window [left,right] of row y with the
+// current pen. Caller holds the lock.
+func (b *Buffer) blankRowWindow(y, left, right int) {
+	b.ensureLineLength(y, right+1)
+	line := b.screen[y]
+	blank := b.currentDefaultCell()
+	for x := left; x <= right; x++ {
+		line[x] = blank
+	}
+}
+
+// scrollRectUp scrolls the rectangle [top,bottom] x [left,right] up by one; the
+// top row's window is discarded, the bottom row's window blanked. Columns
+// outside the margins are untouched, and nothing reaches scrollback. Caller
+// holds the lock.
+func (b *Buffer) scrollRectUp(top, bottom, left, right int) {
+	for y := top; y < bottom; y++ {
+		b.copyRowWindow(y+1, y, left, right)
+	}
+	b.blankRowWindow(bottom, left, right)
+}
+
+// scrollRectDown scrolls the rectangle down by one, blanking the top row's
+// window. Caller holds the lock.
+func (b *Buffer) scrollRectDown(top, bottom, left, right int) {
+	for y := bottom; y > top; y-- {
+		b.copyRowWindow(y-1, y, left, right)
+	}
+	b.blankRowWindow(top, left, right)
 }

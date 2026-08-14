@@ -140,6 +140,7 @@ func (b *Buffer) MoveCursorForwardVisual(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.setHorizMoveDir(1, false)
+	startX := b.cursorX
 	if b.flexWidthMode {
 		b.cursorX += n
 	} else {
@@ -149,6 +150,10 @@ func (b *Buffer) MoveCursorForwardVisual(n int) {
 	if max := b.EffectiveCols() - 1; b.cursorX > max {
 		b.cursorX = max
 	}
+	// CUF stops at the right margin when the cursor starts at or left of it.
+	if _, right, active := b.lrMarginsLocked(); active && startX <= right && b.cursorX > right {
+		b.cursorX = right
+	}
 	b.markDirty()
 }
 
@@ -156,6 +161,7 @@ func (b *Buffer) MoveCursorBackwardVisual(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.setHorizMoveDir(-1, false)
+	startX := b.cursorX
 	if b.flexWidthMode {
 		b.cursorX -= n
 	} else {
@@ -164,6 +170,10 @@ func (b *Buffer) MoveCursorBackwardVisual(n int) {
 	}
 	if b.cursorX < 0 {
 		b.cursorX = 0
+	}
+	// CUB stops at the left margin when the cursor starts at or right of it.
+	if left, _, active := b.lrMarginsLocked(); active && startX >= left && b.cursorX < left {
+		b.cursorX = left
 	}
 	b.markDirty()
 }
