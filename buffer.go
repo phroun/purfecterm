@@ -204,6 +204,17 @@ type Buffer struct {
 	hasScrollRegion bool
 	originMode      bool
 
+	// Alternate screen (DEC ?47/?1047/?1049). When onAltScreen is true the live
+	// fields hold the alternate screen and mainStash holds the primary screen's
+	// context (content, cursor, margins, and its own scrollback), restored on
+	// leave. The alternate screen has its own independent scrollback.
+	onAltScreen bool
+	mainStash   screenState
+
+	// captureScope selects which screen(s) feed the capture content events
+	// (default CaptureMain). OnScreenSwitch is never scope-gated.
+	captureScope CaptureScope
+
 	dirty         bool
 	onDirty       func()
 	onScaleChange func()     // Called when screen scaling modes change
@@ -630,7 +641,7 @@ func (b *Buffer) pushLineToScrollback(line []Cell, info LineInfo) {
 	// is the single chokepoint for every off-screen path — scroll, shrink, and
 	// the scrollback-preserving clear/reset — so the transcript is complete even
 	// past the scrollback cap.
-	if b.captureObserver != nil {
+	if b.captureObserver != nil && b.captureScreenInScope() {
 		b.captureObserver.OnLineOff(line, info)
 	}
 
@@ -827,7 +838,7 @@ func (b *Buffer) SetCaptureLive(enabled bool) {
 // liveEnabled reports whether live-screen events should fire. Caller holds the
 // lock (it is read on the write/cursor path).
 func (b *Buffer) liveEnabled() bool {
-	return b.captureLive && b.captureObserver != nil
+	return b.captureLive && b.captureObserver != nil && b.captureScreenInScope()
 }
 
 // flushLiveWriteRun emits any pending OnWrite run and clears it. Called before

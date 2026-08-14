@@ -87,6 +87,14 @@ type CaptureObserver interface {
 	// string.
 	OnLineOff(line []Cell, info LineInfo)
 
+	// OnScreenSwitch reports the terminal switching between the primary and the
+	// alternate screen (DEC modes ?47 / ?1047 / ?1049): toAlt is true on entering
+	// the alternate screen, false on returning to the primary. It fires whenever
+	// an observer is set — regardless of SetCaptureScope — so a consumer always
+	// knows which screen the events that follow belong to, even for a screen it
+	// is not itself capturing.
+	OnScreenSwitch(toAlt bool)
+
 	// The live-screen events (the `live` rung) let an observer mirror the screen
 	// in place. They fire only while live events are enabled (SetCaptureLive),
 	// since they sit on the write/cursor hot path. Positions are 0-based cells.
@@ -128,6 +136,7 @@ type NopCaptureObserver struct{}
 
 func (NopCaptureObserver) OnOutput([]byte)                       {}
 func (NopCaptureObserver) OnLineOff([]Cell, LineInfo)            {}
+func (NopCaptureObserver) OnScreenSwitch(bool)                   {}
 func (NopCaptureObserver) OnWrite(int, int, string, string)      {}
 func (NopCaptureObserver) OnCursorMove(int, int)                 {}
 func (NopCaptureObserver) OnNewline(int, int)                    {}
@@ -302,6 +311,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.RestoreCursor()
 		p.state = stateGround
 	case 'c': // RIS - Reset to Initial State
+		p.buffer.LeaveAltScreen() // a hard reset returns to the primary screen
 		p.buffer.ClearScreen()
 		p.buffer.SetCursor(0, 0)
 		p.buffer.ResetAttributes()
@@ -680,6 +690,8 @@ func (p *Parser) decrqmStatus(mode int) int {
 	switch mode {
 	case 6: // DECOM - Origin Mode
 		return set(p.buffer.IsOriginMode())
+	case 47, 1047, 1049: // Alternate screen buffer
+		return set(p.buffer.IsAltScreen())
 	case 1000, 1002, 1003:
 		return set(p.buffer.GetMouseTrackingMode() == mode)
 	case 1006:
@@ -963,8 +975,17 @@ func (p *Parser) executePrivateModeSet(set bool) {
 			p.buffer.SetOriginMode(set)
 		case 25: // DECTCEM - Cursor visibility
 			p.buffer.SetCursorVisible(set)
-		case 1049: // Alternate screen buffer
-			// Not yet implemented
+		case 47, 1047, 1049: // Alternate screen buffer
+			// All three enter/leave the alternate screen. In this model the alt
+			// screen is fresh-on-entry and discarded on leave, and the primary
+			// context (including its cursor) is stashed and restored — so the
+			// ?1049 save/restore-cursor semantics fall out, and ?47/?1047 get the
+			// same clean isolation.
+			if set {
+				p.buffer.EnterAltScreen()
+			} else {
+				p.buffer.LeaveAltScreen()
+			}
 		case 1000: // X11 Normal Mouse Tracking (button press/release)
 			if set {
 				p.buffer.SetMouseTrackingMode(1000)
