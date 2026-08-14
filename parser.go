@@ -305,27 +305,17 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.ClearScreen()
 		p.buffer.SetCursor(0, 0)
 		p.buffer.ResetAttributes()
+		p.buffer.ResetScrollRegion()
 		p.state = stateGround
-	case 'D': // IND - Index (move down one line, scroll if needed)
-		_, rows := p.buffer.GetSize()
-		_, y := p.buffer.GetCursor()
-		if y >= rows-1 {
-			p.buffer.ScrollUp(1)
-		} else {
-			p.buffer.MoveCursorDown(1)
-		}
+	case 'D': // IND - Index (down one line; scrolls the region at the bottom margin)
+		p.buffer.LineFeed()
 		p.state = stateGround
 	case 'E': // NEL - Next Line
 		p.buffer.CarriageReturn()
 		p.buffer.LineFeed()
 		p.state = stateGround
-	case 'M': // RI - Reverse Index (move up one line, scroll if needed)
-		_, y := p.buffer.GetCursor()
-		if y == 0 {
-			p.buffer.ScrollDown(1)
-		} else {
-			p.buffer.MoveCursorUp(1)
-		}
+	case 'M': // RI - Reverse Index (up one line; reverse-scrolls at the top margin)
+		p.buffer.ReverseIndex()
 		p.state = stateGround
 	case '=': // DECKPAM - Keypad Application Mode
 		p.state = stateGround
@@ -495,10 +485,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 		_, y := p.buffer.GetCursor()
 		p.buffer.SetCursorVisual(x, y)
 
-	case 'H', 'f': // CUP/HVP - Cursor Position
+	case 'H', 'f': // CUP/HVP - Cursor Position (origin-mode aware)
 		row := p.getParam(0, 1) - 1
 		col := p.getParam(1, 1) - 1
-		p.buffer.SetCursorVisual(col, row)
+		p.buffer.SetCursorPosition(col, row)
 
 	case 'J': // ED - Erase in Display
 		switch p.getParam(0, 0) {
@@ -570,7 +560,10 @@ func (p *Parser) executeCSI(finalByte byte) {
 		// Would need to send response - ignore for now
 
 	case 'r': // DECSTBM - Set Top and Bottom Margins
-		// Scroll region - not yet implemented
+		// Non-private only; CSI ? ... r is XTRESTORE (DEC private mode restore).
+		if p.csiPrivate == 0 {
+			p.buffer.SetScrollRegion(p.getParam(0, 1), p.getParam(1, 0))
+		}
 
 	case 'c': // DA - Device Attributes
 		// Would need to send response - ignore
@@ -578,9 +571,15 @@ func (p *Parser) executeCSI(finalByte byte) {
 	case 't': // Window manipulation
 		p.executeWindowManipulation()
 
-	case 'p': // DECRQM - Request DEC Private Mode (CSI ? Ps $ p)
+	case 'p': // DECRQM (CSI ? Ps $ p) / DECSTR (CSI ! p)
 		if p.csiPrivate == '?' && p.csiIntermediate == '$' {
 			p.executeDECRQM()
+		} else if p.csiPrivate == '!' {
+			// DECSTR - Soft Terminal Reset: clear the scroll region and origin
+			// mode, reset attributes, and home the cursor (screen not cleared).
+			p.buffer.ResetScrollRegion()
+			p.buffer.ResetAttributes()
+			p.buffer.SetCursor(0, 0)
 		}
 
 	case 'q': // DECSCUSR - Set Cursor Style (with space intermediate)
@@ -679,6 +678,8 @@ func (p *Parser) decrqmStatus(mode int) int {
 		return 2
 	}
 	switch mode {
+	case 6: // DECOM - Origin Mode
+		return set(p.buffer.IsOriginMode())
 	case 1000, 1002, 1003:
 		return set(p.buffer.GetMouseTrackingMode() == mode)
 	case 1006:
@@ -958,6 +959,8 @@ func (p *Parser) executePrivateModeSet(set bool) {
 		case 5: // DECSCNM - Screen Mode (reverse video)
 			// h = reverse video (light mode), l = normal video (dark mode)
 			p.buffer.SetDarkTheme(!set)
+		case 6: // DECOM - Origin Mode (cursor addressing relative to scroll region)
+			p.buffer.SetOriginMode(set)
 		case 25: // DECTCEM - Cursor visibility
 			p.buffer.SetCursorVisible(set)
 		case 1049: // Alternate screen buffer

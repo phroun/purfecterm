@@ -1,7 +1,5 @@
 package purfecterm
 
-import "time"
-
 // --- Character Writing ---
 
 // WriteChar writes a character at the current cursor position
@@ -88,7 +86,6 @@ func (b *Buffer) writeCharInternal(ch rune) {
 	}
 
 	effectiveCols := b.EffectiveCols()
-	effectiveRows := b.EffectiveRows()
 
 	// Check if this character has a custom glyph defined
 	hasCustomGlyph := b.customGlyphs[ch] != nil
@@ -171,14 +168,11 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					}
 				}
 
-				// Move to next line
+				// Move to next line (region-aware: at the bottom margin this
+				// scrolls the region, leaving the wrapped-from line at cursorY-1,
+				// which the reflow logic below relies on).
 				b.setHorizMoveDir(-1, false)
-				b.trackCursorYMove(b.cursorY + 1)
-				b.cursorY++
-				if b.cursorY >= effectiveRows {
-					b.scrollUpInternal()
-					b.cursorY = effectiveRows - 1
-				}
+				b.advanceLineInternal()
 
 				// Ensure screen has enough rows
 				for b.cursorY >= len(b.screen) {
@@ -232,15 +226,10 @@ func (b *Buffer) writeCharInternal(ch rune) {
 					b.cursorX = leadingSpaces
 				}
 			} else {
-				// Standard auto-wrap: move to next line
+				// Standard auto-wrap: move to next line (region-aware).
 				b.setHorizMoveDir(-1, false)
 				b.cursorX = 0
-				b.trackCursorYMove(b.cursorY + 1)
-				b.cursorY++
-				if b.cursorY >= effectiveRows {
-					b.scrollUpInternal()
-					b.cursorY = effectiveRows - 1
-				}
+				b.advanceLineInternal()
 			}
 		} else {
 			// Auto-wrap disabled (DECAWM off): stay at last column, overwrite character
@@ -386,13 +375,7 @@ func (b *Buffer) Newline() {
 		b.flushLiveWriteRun()
 	}
 	b.cursorX = 0
-	b.trackCursorYMove(b.cursorY + 1)
-	b.cursorY++
-	effectiveRows := b.EffectiveRows()
-	if b.cursorY >= effectiveRows {
-		b.scrollUpInternal()
-		b.cursorY = effectiveRows - 1
-	}
+	b.advanceLineInternal()
 	if b.liveEnabled() {
 		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}
@@ -421,13 +404,7 @@ func (b *Buffer) LineFeed() {
 	if b.liveEnabled() {
 		b.flushLiveWriteRun()
 	}
-	b.trackCursorYMove(b.cursorY + 1)
-	b.cursorY++
-	effectiveRows := b.EffectiveRows()
-	if b.cursorY >= effectiveRows {
-		b.scrollUpInternal()
-		b.cursorY = effectiveRows - 1
-	}
+	b.advanceLineInternal()
 	if b.liveEnabled() {
 		b.captureObserver.OnNewline(b.cursorX, b.cursorY)
 	}
@@ -477,34 +454,13 @@ func (b *Buffer) Backspace() {
 
 // --- Screen Scrolling ---
 
+// scrollUpInternal scrolls the current scroll region up by one line. With no
+// region set this is the whole screen (feeding scrollback, as before); with a
+// region it is confined to [top,bottom] and does not touch history. Caller holds
+// the lock.
 func (b *Buffer) scrollUpInternal() {
-	if len(b.screen) == 0 {
-		return
-	}
-
-	if b.liveEnabled() {
-		b.flushLiveWriteRun()
-		b.captureObserver.OnScrollLineOff(1)
-	}
-
-	// Push top line to scrollback - this is a scroll-causing event
-	b.pushLineToScrollback(b.screen[0], b.lineInfos[0])
-	b.lastScrollCausingEvent = time.Now()
-
-	// Shift screen up
-	copy(b.screen, b.screen[1:])
-	copy(b.lineInfos, b.lineInfos[1:])
-
-	// Add new empty line at bottom with current attributes
-	lastIdx := len(b.screen) - 1
-	b.screen[lastIdx] = b.makeEmptyLine()
-	b.lineInfos[lastIdx] = b.makeDefaultLineInfo()
-
-	// Content scrolled up = new content at bottom = cursor moving toward newer content
-	// Set direction directly since most cursor movements bypass setCursorInternal
-	b.lastCursorMoveDir = 1 // Down
-
-	b.markDirty()
+	top, bottom := b.scrollRegionLocked()
+	b.scrollRegionUp(top, bottom)
 }
 
 // ScrollUp scrolls up by n lines
@@ -520,12 +476,9 @@ func (b *Buffer) ScrollUp(n int) {
 func (b *Buffer) ScrollDown(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		copy(b.screen[1:], b.screen[:screenLen-1])
-		copy(b.lineInfos[1:], b.lineInfos[:screenLen-1])
-		b.screen[0] = b.makeEmptyLine()
-		b.lineInfos[0] = b.makeDefaultLineInfo()
+	top, bottom := b.scrollRegionLocked()
+	for i := 0; i < n; i++ {
+		b.scrollRegionDown(top, bottom)
 	}
 	b.markDirty()
 }
@@ -727,11 +680,20 @@ func (b *Buffer) ClearToStartOfScreen() {
 func (b *Buffer) InsertLines(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		if b.cursorY < screenLen-1 {
-			copy(b.screen[b.cursorY+1:], b.screen[b.cursorY:screenLen-1])
-			copy(b.lineInfos[b.cursorY+1:], b.lineInfos[b.cursorY:screenLen-1])
+	top, bottom := b.scrollRegionLocked()
+	// IL is a no-op when the cursor is outside the vertical scroll region.
+	if b.cursorY < top || b.cursorY > bottom {
+		return
+	}
+	if bottom >= len(b.screen) {
+		bottom = len(b.screen) - 1
+	}
+	for i := 0; i < n; i++ {
+		// Shift [cursorY..bottom-1] down to [cursorY+1..bottom]; lines pushed
+		// past the bottom margin are lost.
+		for y := bottom; y > b.cursorY; y-- {
+			b.screen[y] = b.screen[y-1]
+			b.lineInfos[y] = b.lineInfos[y-1]
 		}
 		b.screen[b.cursorY] = b.makeEmptyLine()
 		b.lineInfos[b.cursorY] = b.makeDefaultLineInfo()
@@ -743,14 +705,22 @@ func (b *Buffer) InsertLines(n int) {
 func (b *Buffer) DeleteLines(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	screenLen := len(b.screen)
-	for i := 0; i < n && screenLen > 0; i++ {
-		if b.cursorY < screenLen-1 {
-			copy(b.screen[b.cursorY:], b.screen[b.cursorY+1:])
-			copy(b.lineInfos[b.cursorY:], b.lineInfos[b.cursorY+1:])
+	top, bottom := b.scrollRegionLocked()
+	// DL is a no-op when the cursor is outside the vertical scroll region.
+	if b.cursorY < top || b.cursorY > bottom {
+		return
+	}
+	if bottom >= len(b.screen) {
+		bottom = len(b.screen) - 1
+	}
+	for i := 0; i < n; i++ {
+		// Shift [cursorY+1..bottom] up to [cursorY..bottom-1]; blank the bottom.
+		for y := b.cursorY; y < bottom; y++ {
+			b.screen[y] = b.screen[y+1]
+			b.lineInfos[y] = b.lineInfos[y+1]
 		}
-		b.screen[screenLen-1] = b.makeEmptyLine()
-		b.lineInfos[screenLen-1] = b.makeDefaultLineInfo()
+		b.screen[bottom] = b.makeEmptyLine()
+		b.lineInfos[bottom] = b.makeDefaultLineInfo()
 	}
 	b.markDirty()
 }

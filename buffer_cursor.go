@@ -299,7 +299,12 @@ func (b *Buffer) IsAutoScrollDisabled() bool {
 func (b *Buffer) MoveCursorUp(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	top, _ := b.scrollRegionLocked()
 	newY := b.cursorY - n
+	// CUU stops at the top margin when the cursor starts at or below it.
+	if b.cursorY >= top && newY < top {
+		newY = top
+	}
 	if newY < 0 {
 		newY = 0
 	}
@@ -312,8 +317,13 @@ func (b *Buffer) MoveCursorUp(n int) {
 func (b *Buffer) MoveCursorDown(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	newY := b.cursorY + n
+	_, bottom := b.scrollRegionLocked()
 	effectiveRows := b.EffectiveRows()
+	newY := b.cursorY + n
+	// CUD stops at the bottom margin when the cursor starts at or above it.
+	if b.cursorY <= bottom && newY > bottom {
+		newY = bottom
+	}
 	if newY >= effectiveRows {
 		newY = effectiveRows - 1
 	}

@@ -194,6 +194,16 @@ type Buffer struct {
 	savedCursorX int
 	savedCursorY int
 
+	// Scroll region (DECSTBM) and origin mode (DECOM). scrollTop/scrollBottom
+	// are 0-based, inclusive, in effective rows. hasScrollRegion is false when
+	// the region spans the full screen (the default); scrollRegionLocked()
+	// resolves the effective bounds. originMode makes CUP/HVP row/col
+	// margin-relative and confines the cursor to the region.
+	scrollTop       int
+	scrollBottom    int
+	hasScrollRegion bool
+	originMode      bool
+
 	dirty         bool
 	onDirty       func()
 	onScaleChange func()     // Called when screen scaling modes change
@@ -473,6 +483,12 @@ func (b *Buffer) Resize(cols, rows int) {
 	if cols == b.cols && rows == b.rows {
 		return
 	}
+
+	// A resize resets the scroll region to the full screen (matching xterm);
+	// origin mode persists. scrollRegionLocked also self-heals, but clearing
+	// here keeps the stored bounds meaningful.
+	b.hasScrollRegion = false
+	b.scrollTop = 0
 
 	// Calculate logicalHiddenAbove BEFORE resize to track scrollback visibility state
 	oldEffectiveRows := b.EffectiveRows()
