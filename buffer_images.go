@@ -53,8 +53,9 @@ func (b *Buffer) IsSixelScrolling() bool {
 	return b.sixelScrolling
 }
 
-// PlaceSixelImage anchors a decoded image at the cursor, advances the cursor per
-// sixel scrolling, and scrolls the screen if the image runs past the bottom.
+// PlaceSixelImage anchors a decoded image at the cursor, leaves the cursor on
+// the image's last row per sixel scrolling, and scrolls the screen if the image
+// runs past the bottom.
 func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 	if img == nil || img.W == 0 || img.H == 0 {
 		return
@@ -84,15 +85,21 @@ func (b *Buffer) PlaceSixelImage(img *SixelImage) {
 	b.images = append(b.images, pi)
 
 	if b.sixelScrolling {
+		// "When sixel mode is exited, the text cursor is set to the current
+		// sixel cursor position" — and the sixel cursor is a pixel position
+		// inside the LAST band written, so the text cursor lands on the image's
+		// own last row, not below it. Advancing one further is the classic
+		// off-by-one: every program that ends its image with a newline (chafa,
+		// img2sixel) then leaves a blank line under it.
 		effRows := b.EffectiveRows()
-		below := b.cursorY + cellsH // desired cursor row, just under the image
-		if scrollN := below - (effRows - 1); scrollN > 0 {
+		last := b.cursorY + cellsH - 1 // the image's own last row
+		if scrollN := last - (effRows - 1); scrollN > 0 {
 			for k := 0; k < scrollN; k++ {
 				b.scrollUpInternal() // also shifts image anchors up
 			}
 			b.cursorY = effRows - 1
 		} else {
-			b.cursorY = below
+			b.cursorY = last
 		}
 		b.cursorX = 0
 	}

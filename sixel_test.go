@@ -49,8 +49,8 @@ func TestSixelTransparency(t *testing.T) {
 	}
 }
 
-// A Sixel DCS through the parser places a cell-anchored image and advances the
-// cursor below it (sixel scrolling).
+// A Sixel DCS through the parser places a cell-anchored image and leaves the
+// cursor on the image's last row (sixel scrolling).
 func TestSixelPlacement(t *testing.T) {
 	b := NewBuffer(20, 10, 100)
 	b.SetCellPixelSize(10, 20)
@@ -67,7 +67,9 @@ func TestSixelPlacement(t *testing.T) {
 	if imgs[0].CellsWide != 1 || imgs[0].CellsHigh != 1 {
 		t.Fatalf("cells = %dx%d, want 1x1", imgs[0].CellsWide, imgs[0].CellsHigh)
 	}
-	cursorAt(t, b, 0, 1) // cursor lands on the row below the image
+	// One cell tall, so the cursor stays on row 0 — the image's own last row.
+	// The program's trailing newline is what moves past it.
+	cursorAt(t, b, 0, 0)
 }
 
 // A placed image scrolls up with the text and is dropped when it leaves the top.
