@@ -89,15 +89,31 @@ func (p *Parser) transmitKittyFrame(cmd kittyCmd, data []byte) {
 		canvas = cloneBitmap(img.frameAt(cmd.cols).bitmap)
 	case cmd.rows > 0 && img.frameAt(cmd.rows) != nil: // r= edit in place
 		canvas = cloneBitmap(img.frameAt(cmd.rows).bitmap)
-	default:
+	case cmd.cellOffY != 0: // Y= an explicit background colour
 		canvas = solidBitmap(img.bitmap.W, img.bitmap.H, cmd.cellOffY)
+	default:
+		// A frame that names no base is a DIFFERENCE against the picture, so
+		// the root is the canvas. Starting from transparent instead left
+		// everything the frame did not carry as a hole.
+		canvas = cloneBitmap(img.frames[0].bitmap)
 	}
 	compositeBitmap(canvas, patch, cmd.srcX, cmd.srcY, cmd.cellOffX == 1)
 
 	frame := &kittyFrame{bitmap: canvas, gapMS: cmd.zIndex}
-	if cmd.rows > 0 && img.frameAt(cmd.rows) != nil {
-		img.frames[cmd.rows-1] = frame // edited in place
-	} else {
+	switch {
+	case cmd.rows > 0 && cmd.rows <= MaxKittyFrames:
+		// r= NAMES the frame. A client addressing frame 3 while only the root
+		// exists means frame 3, not "the next one" — appending instead left
+		// its later commands pointing at a frame that was never created. Any
+		// gap is filled from the root, which is the picture those frames are
+		// differences against.
+		for len(img.frames) < cmd.rows {
+			img.frames = append(img.frames, &kittyFrame{
+				bitmap: cloneBitmap(img.frames[0].bitmap),
+			})
+		}
+		img.frames[cmd.rows-1] = frame
+	default:
 		if len(img.frames) >= MaxKittyFrames {
 			// Drop the oldest non-root frame rather than grow without bound.
 			img.frames = append(img.frames[:1], img.frames[2:]...)

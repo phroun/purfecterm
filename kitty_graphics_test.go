@@ -861,3 +861,61 @@ func TestGraphicsLogIsOffByDefault(t *testing.T) {
 	_, p, _ := newKittyTestBuffer()
 	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1", rgbaPayload(2, 2, 1, 1, 1, 255)))
 }
+
+// r= NAMES the frame. A client addressing frame 3 while only the root exists
+// means frame 3 — appending into the next free slot instead left its later
+// commands pointing at a frame that was never created, which is exactly what
+// awrit's second and third images hit: a=f r=3 landed in slot 2, and the a=c
+// that followed reported the frame missing.
+func TestKittyFrameNumberIsHonoured(t *testing.T) {
+	b, p, replies := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1,q=1", rgbaPayload(2, 2, 255, 0, 0, 255)))
+
+	// Straight to frame 3, skipping 2 entirely.
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,r=3,X=1,q=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
+	// The compose that follows must FIND frame 3.
+	p.Parse([]byte("\x1b_Ga=c,i=1,r=3,c=1,x=0,y=0,w=1,h=1\x1b\\"))
+
+	for _, r := range *replies {
+		if strings.Contains(r, "ENOENT") {
+			t.Fatalf("frame 3 was not created where it was named: %q", *replies)
+		}
+	}
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=3\x1b\\"))
+	if _, g, _, _ := b.GetImages()[0].Image.At(1, 1); g != 255 {
+		t.Errorf("frame 3 does not hold the data addressed to it")
+	}
+}
+
+// A gap opened by naming a distant frame is filled from the root, so the
+// intervening frames are the picture rather than holes.
+func TestKittyFrameGapIsFilledFromRoot(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1,q=1", rgbaPayload(2, 2, 255, 0, 0, 255)))
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,r=4,X=1,q=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
+
+	// Frame 2 was never sent; it must be the root picture, not transparent.
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+	r, _, _, a := b.GetImages()[0].Image.At(0, 0)
+	if a != 255 || r != 255 {
+		t.Errorf("the filled frame is (%d,..,alpha %d), want the opaque root", r, a)
+	}
+}
+
+// A frame that names no base is a difference against the picture, so what it
+// does not carry stays visible rather than becoming a hole.
+func TestKittyFrameWithoutBaseStartsFromRoot(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1,q=1", rgbaPayload(4, 4, 255, 0, 0, 255)))
+	// A 4x1 strip covering only the top row.
+	p.Parse(kittySeq("a=f,f=32,s=4,v=1,i=1,r=2,X=1,q=1", rgbaPayload(4, 1, 0, 255, 0, 255)))
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+
+	img := b.GetImages()[0].Image
+	if _, g, _, _ := img.At(0, 0); g != 255 {
+		t.Errorf("the strip is not where it was placed")
+	}
+	if r, _, _, a := img.At(0, 3); r != 255 || a != 255 {
+		t.Errorf("below the strip is (%d,..,alpha %d), want the root picture", r, a)
+	}
+}
