@@ -181,13 +181,13 @@ func (p *Parser) executeKittyGraphics(body string) {
 	control, payload, _ := strings.Cut(body, ";")
 	cmd := parseKittyCmd(control, payload)
 
-	// A continuation chunk carries only m= (and q=), so it must inherit the
-	// command that opened the transfer rather than be read on its own.
-	if p.kittyXfer != nil && control != "" && !strings.Contains(control, "a=") {
-		if cmd.more || strings.Contains(control, "m=") {
-			p.appendKittyChunk(cmd)
-			return
-		}
+	// A continuation chunk carries only m= (and q=), except for an animation
+	// frame, which repeats a=f on every chunk. Keying on m= rather than on the
+	// absence of a= is what lets a chunked FRAME reassemble instead of being
+	// read as a fresh command per chunk.
+	if p.kittyXfer != nil && control != "" && strings.Contains(control, "m=") {
+		p.appendKittyChunk(cmd)
+		return
 	}
 	if p.kittyXfer != nil && control == "" {
 		p.appendKittyChunk(cmd)
@@ -203,14 +203,16 @@ func (p *Parser) executeKittyGraphics(body string) {
 		p.placeStoredKittyImage(cmd)
 	case 'd':
 		p.deleteKittyImages(cmd)
-	case 'f', 'a', 'c':
-		// Animation frames (a=f), animation control (a=a) and composition
-		// (a=c) are NOT implemented, and say so. Answering OK to a probe was
-		// exactly backwards: a client asks these to find out what it may use,
-		// so claiming them is what STOPS it falling back to still images —
-		// it goes on to drive an animation that never draws. An error here is
-		// the answer that lets it degrade.
-		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "action not supported")
+	case 'f': // transmit frame data
+		p.beginKittyTransfer(cmd)
+	case 'a': // animation control
+		p.controlKittyAnimation(cmd)
+	case 'c': // compose frames onto one another
+		// Composition of an existing frame onto another is not implemented.
+		// Unlike the frame and animation actions it is not load-bearing for a
+		// client that streams — those transmit and then select — so refusing
+		// it is an answer a client can work around rather than a wall.
+		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "compose not supported")
 	default:
 		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "unsupported action")
 	}
@@ -264,6 +266,11 @@ func (p *Parser) appendKittyChunk(cmd kittyCmd) {
 // finishKittyTransfer decodes an assembled payload into an image, stores it,
 // and places it when the action asked for display.
 func (p *Parser) finishKittyTransfer(cmd kittyCmd, data []byte) {
+	if cmd.action == 'f' {
+		// A frame carries its own decompression and composition.
+		p.transmitKittyFrame(cmd, data)
+		return
+	}
 	if cmd.compression == 'z' {
 		out, err := inflateZlib(data)
 		if err != nil {

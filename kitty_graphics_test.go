@@ -608,23 +608,152 @@ func TestKittyImageStoreIsBounded(t *testing.T) {
 	})
 }
 
-// A probe for an action this terminal does not implement must be answered with
-// an ERROR, not OK. A client sends these to discover what it may use, so
-// claiming support is what stops it falling back — it goes on to drive an
-// animation that never draws.
-func TestKittyUnsupportedActionsReportError(t *testing.T) {
-	for _, action := range []string{"f", "a", "c"} {
-		b, p, replies := newKittyTestBuffer()
-		p.Parse([]byte("\x1b_Ga=" + action + ",i=42,r=2\x1b\\"))
-		if len(*replies) != 1 {
-			t.Fatalf("a=%s produced %d replies, want 1", action, len(*replies))
+// An action this terminal does not implement is answered with an ERROR, never
+// OK: a client sends these to discover what it may use, so claiming support is
+// what stops it falling back. Composition is the only one left in that
+// category — frames and animation control are implemented.
+func TestKittyComposeReportsUnsupported(t *testing.T) {
+	b, p, replies := newKittyTestBuffer()
+	p.Parse([]byte("\x1b_Ga=c,i=42,r=2\x1b\\"))
+	if len(*replies) != 1 || !strings.Contains((*replies)[0], "EINVAL") {
+		t.Errorf("a=c answered %q, want EINVAL", *replies)
+	}
+	if len(b.GetImages()) != 0 {
+		t.Error("a=c placed an image")
+	}
+}
+
+// A frame or animation command naming an image that was never transmitted is
+// ENOENT — a different answer from "not supported", and the one that tells a
+// client to retransmit rather than to give up on the feature.
+func TestKittyAnimationOnMissingImageIsNotFound(t *testing.T) {
+	for _, action := range []string{"f", "a"} {
+		_, p, replies := newKittyTestBuffer()
+		p.Parse([]byte("\x1b_Ga=" + action + ",i=42,f=32,s=1,v=1\x1b\\"))
+		if len(*replies) != 1 || !strings.Contains((*replies)[0], "ENOENT") {
+			t.Errorf("a=%s on a missing image answered %q, want ENOENT", action, *replies)
 		}
-		if !strings.Contains((*replies)[0], "EINVAL") {
-			t.Errorf("a=%s answered %q, want an error so the client can fall back",
-				action, (*replies)[0])
+	}
+}
+
+// A client that streams — a browser, a video player — transmits FRAMES against
+// an image it already sent and then switches which is current. That is double
+// buffering, and it is load-bearing: refusing it does not degrade such a client
+// to still images, it stops it.
+func TestKittyAnimationFrameSwitching(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	// Root image: 2x2, all red. Displayed at once.
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1", rgbaPayload(2, 2, 255, 0, 0, 255)))
+	imgs := b.GetImages()
+	if len(imgs) != 1 {
+		t.Fatalf("placed %d images, want 1", len(imgs))
+	}
+	if r, _, _, _ := imgs[0].Image.At(0, 0); r != 255 {
+		t.Fatalf("root frame is not red")
+	}
+
+	// Frame 2: all green, transmitted but NOT yet shown.
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
+	if _, g, _, _ := b.GetImages()[0].Image.At(0, 0); g == 255 {
+		t.Error("transmitting a frame changed the display; only a=a may do that")
+	}
+
+	// Make frame 2 current: every placement of the image follows.
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+	r, g, _, _ := b.GetImages()[0].Image.At(0, 0)
+	if g != 255 || r != 0 {
+		t.Errorf("after selecting frame 2 the pixel is (%d,%d,..), want green", r, g)
+	}
+
+	// And back to the root frame.
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=1\x1b\\"))
+	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
+		t.Error("selecting frame 1 did not return to the root image")
+	}
+}
+
+// A frame may carry only part of the canvas, landing at x,y over a base frame.
+func TestKittyAnimationPartialFrame(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", rgbaPayload(4, 4, 255, 0, 0, 255)))
+
+	// A 2x2 blue patch at (2,2), composed over frame 1.
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,x=2,y=2,c=1,i=1", rgbaPayload(2, 2, 0, 0, 255, 255)))
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+
+	img := b.GetImages()[0].Image
+	if _, _, bl, _ := img.At(3, 3); bl != 255 {
+		t.Errorf("the patch did not land at its offset")
+	}
+	if r, _, _, _ := img.At(0, 0); r != 255 {
+		t.Errorf("the base frame's pixels were lost outside the patch")
+	}
+}
+
+// An unset alpha composes rather than overwrites, and X=1 asks for replacement.
+func TestKittyAnimationCompositionModes(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		control string
+		wantRed byte
+	}{
+		{"alpha blend leaves the base showing", "a=f,f=32,s=2,v=2,c=1,i=1", 255},
+		{"X=1 replaces outright", "a=f,f=32,s=2,v=2,c=1,X=1,i=1", 0},
+	} {
+		b, p, _ := newKittyTestBuffer()
+		p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1", rgbaPayload(2, 2, 255, 0, 0, 255)))
+		// A fully TRANSPARENT green patch: blended it is invisible, replaced it wins.
+		p.Parse(kittySeq(c.control, rgbaPayload(2, 2, 0, 255, 0, 0)))
+		p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+		if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != c.wantRed {
+			t.Errorf("%s: red = %d, want %d", c.name, r, c.wantRed)
 		}
-		if len(b.GetImages()) != 0 {
-			t.Errorf("a=%s placed an image", action)
+	}
+}
+
+// A frame for an image that was never transmitted is ENOENT, not a crash.
+func TestKittyAnimationFrameForMissingImage(t *testing.T) {
+	b, p, replies := newKittyTestBuffer()
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=404", rgbaPayload(2, 2, 1, 1, 1, 255)))
+	if len(b.GetImages()) != 0 {
+		t.Error("a frame placed an image")
+	}
+	if len(*replies) != 1 || !strings.Contains((*replies)[0], "ENOENT") {
+		t.Errorf("replies = %q, want ENOENT", *replies)
+	}
+}
+
+// Frame storage is bounded: a client that streams frames forever is streaming,
+// not animating, and must not grow the store without limit.
+func TestKittyAnimationFrameCountIsBounded(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1,q=1", rgbaPayload(2, 2, 1, 1, 1, 255)))
+	for i := 0; i < MaxKittyFrames*2; i++ {
+		p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,q=1", rgbaPayload(2, 2, 2, 2, 2, 255)))
+	}
+	var n int
+	b.withKittyStore(func() {
+		if img := b.kittyStore().get(1); img != nil {
+			n = len(img.frames)
 		}
+	})
+	if n > MaxKittyFrames {
+		t.Errorf("image holds %d frames, want at most %d", n, MaxKittyFrames)
+	}
+}
+
+// The probe awrit sends on startup must be ANSWERED, not refused: it asks
+// whether frames work before deciding to run at all.
+func TestKittyAnimationProbeIsAccepted(t *testing.T) {
+	_, p, replies := newKittyTestBuffer()
+	p.Parse(kittySeq("f=24,i=4294111295,t=d,s=1,v=1,z=1", []byte{0, 0, 0}))
+	p.Parse(kittySeq("a=f,i=4294111295,f=24,t=d,s=1,v=1,z=1,r=2", []byte{0, 0, 0}))
+
+	all := strings.Join(*replies, "")
+	if strings.Contains(all, "EINVAL") || strings.Contains(all, "ENOENT") {
+		t.Errorf("the frame probe was refused: %q", *replies)
+	}
+	if strings.Count(all, "OK") < 2 {
+		t.Errorf("replies = %q, want both the image and the frame accepted", *replies)
 	}
 }

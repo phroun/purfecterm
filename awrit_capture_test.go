@@ -37,10 +37,22 @@ func TestAwritStartupLeavesNothingOnScreen(t *testing.T) {
 	if !strings.Contains(all, "\x1b[?") || !strings.Contains(all, "u") {
 		t.Errorf("no keyboard-flags reply in %q", replies)
 	}
-	// The animation and composition probes must be REFUSED, so the client can
-	// fall back rather than drive features that never draw.
-	if n := strings.Count(all, "EINVAL"); n < 2 {
-		t.Errorf("unsupported-action probes drew %d errors, want the animation and compose probes refused: %q", n, replies)
+	// The FRAME probe must be accepted. awrit asks it to decide whether to run
+	// at all: told no, it exits on the spot without drawing anything, which is
+	// what refusing it did. Composition is still refused, and a client can work
+	// around that one.
+	if n := strings.Count(all, "EINVAL"); n != 1 {
+		t.Errorf("%d actions refused, want only the compose probe: %q", n, replies)
+	}
+	if n := strings.Count(all, "OK"); n < 2 {
+		t.Errorf("%d actions accepted, want at least the image and its frame: %q", n, replies)
+	}
+	// The capture's own image arrives over SHARED MEMORY, naming an object that
+	// exists only on the machine it was captured from. Its absence here is the
+	// honest answer, and the animation command that follows it correctly
+	// reports the image missing rather than inventing one.
+	if !strings.Contains(all, "ENOENT") {
+		t.Error("the shared-memory image resolved in a test environment that has no such object")
 	}
 	// It ends by popping the flags it pushed, which must leave none set.
 	if got := b.KeyboardFlags(); got != 0 {

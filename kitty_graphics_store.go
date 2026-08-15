@@ -12,6 +12,15 @@ type kittyImage struct {
 	id     uint32
 	number uint32
 	bitmap *Bitmap
+
+	// Animation. frames[0] is the root frame — the image as first transmitted
+	// — so a frame number from the wire indexes this directly. current is the
+	// 1-based frame a placement of this image shows.
+	frames  []*kittyFrame
+	current int
+	gapMS   int
+	loops   int
+	running bool
 }
 
 // KittyImageStore holds transmitted images and hands out IDs. It is owned by a
