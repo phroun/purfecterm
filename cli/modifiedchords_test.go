@@ -125,36 +125,33 @@ func TestAltBitComesFromTheModifierBitmask(t *testing.T) {
 	}
 }
 
-// An event suffix decides whether there is a keystroke to send at all.
+// A name carrying an event suffix has no encoding here, and that is an
+// UNIMPLEMENTED FEATURE, not a decision this encoder gets to make.
 //
-// A release and a modifier's side are things a legacy PTY cannot express, so
-// they send nothing. A repeat is a keystroke — a terminal sends the character
-// again — so the suffix comes off and the key underneath encodes as itself.
-// Previously the suffix rode into the lookups, matched nothing, and the whole
-// decorated name was sent to the guest as text.
-func TestEventSuffixes(t *testing.T) {
-	for _, c := range []struct {
-		key  string
-		want string
-		what string
-	}{
-		{"a:Release", "", "a key coming up sends nothing"},
-		{"Return:Release", "", "and that holds for named keys too"},
-		{"S-:Left", "", "which of a paired modifier key it was"},
-		{"S-:Right", "", "likewise"},
-		{"a:Repeat", "a", "an auto-repeat is another keystroke"},
-		{"M-a:Repeat", "\x1ba", "including a modified one"},
-		{"Return:Repeat", "\r", "and a named one"},
-	} {
-		got := keyToBytes(c.key)
-		if c.want == "" {
-			if got != nil {
-				t.Errorf("%s (%s) = %q, want nil", c.key, c.what, string(got))
-			}
+// The kitty keyboard protocol expresses key release and repeat, purfecterm
+// negotiates it — keyboard_protocol.go tracks KeyboardReportEvents per screen,
+// with a push stack and a query reply — and a child that has asked for those
+// events is entitled to receive them. This encoder never consults
+// Buffer.KeyboardFlags(), so it cannot honour the request, and the same is true
+// of every other negotiated flag: disambiguation, alternate keys, all-keys,
+// associated text. It emits legacy sequences and one CSI-u form (the G- glyph).
+//
+// So a suffixed name lands on the unknown-key path and goes out bracketed,
+// which is what that path is for: it says this encoder has no answer, visibly,
+// rather than dropping the event and looking like it decided something.
+//
+// This test exists to hold that line. If it starts failing because the flags
+// are now honoured, the right change is to assert the CSI-u encoding — not to
+// restore a suppression.
+func TestEventSuffixesHaveNoEncodingYet(t *testing.T) {
+	for _, key := range []string{"a:Release", "Return:Release", "a:Repeat"} {
+		got := keyToBytes(key)
+		if got == nil {
+			t.Errorf("%s: dropped silently; an unencoded event must stay visible", key)
 			continue
 		}
-		if string(got) != c.want {
-			t.Errorf("%s (%s) = %q, want %q", c.key, c.what, string(got), c.want)
+		if want := string(unknownKeyBytes(key)); string(got) != want {
+			t.Errorf("%s = %q, want %q", key, string(got), want)
 		}
 	}
 }

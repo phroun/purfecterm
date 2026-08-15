@@ -177,23 +177,6 @@ func applyAppCursorKeys(key string, b []byte) []byte {
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.
 // Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
-	// A name carrying an event or side suffix is not a plain keystroke.
-	//
-	// ":Release" is a key coming up and ":Left"/":Right" say which of a paired
-	// modifier key was involved — things a legacy PTY has no way to express, so
-	// there is nothing to send. ":Repeat" is the opposite case: an auto-repeat
-	// IS another keystroke, and what a terminal sends for it is the character
-	// again, so the suffix comes off and the key underneath encodes normally.
-	//
-	// Without this the suffix rode along into the lookups, matched nothing, and
-	// the whole name reached the guest as text.
-	if base, suffix, ok := splitEventSuffix(key); ok {
-		if suffix != ":Repeat" {
-			return nil
-		}
-		key = base
-	}
-
 	// Check explicit mappings first. The name is resolved to a Key and the
 	// bytes are looked up under that, so this table is indexed by whatever
 	// direct-key-handler currently calls the key rather than by a word copied
@@ -273,22 +256,6 @@ func keyToBytes(key string) []byte {
 // without restating the bracketing and drifting from it.
 func unknownKeyBytes(name string) []byte {
 	return []byte("<" + name + ">")
-}
-
-// eventSuffixes are the event and side markers direct-key-handler can trail a
-// name with. They mirror that package's own list; a name never carries more
-// than one.
-var eventSuffixes = []string{":Release", ":Repeat", ":Left", ":Right"}
-
-// splitEventSuffix separates a trailing event or side marker from the key name
-// it decorates, reporting whether there was one.
-func splitEventSuffix(key string) (base, suffix string, ok bool) {
-	for _, s := range eventSuffixes {
-		if strings.HasSuffix(key, s) {
-			return key[:len(key)-len(s)], s, true
-		}
-	}
-	return key, "", false
 }
 
 // controlByte answers the ASCII control code a caret chord names — "^A" is 1,
