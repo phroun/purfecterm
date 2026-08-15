@@ -21,6 +21,9 @@ const (
 	stateDECLineAttr             // After ESC # (waiting for line attribute command)
 	stateDCS                     // After ESC P (collecting a DCS string)
 	stateDCSEsc                  // ESC seen inside a DCS string (expecting the \ of ST)
+	stateEscapeInter             // After ESC + an intermediate byte (0x20-0x2F)
+	stateAPC                     // After ESC _ (collecting an APC string)
+	stateAPCEsc                  // ESC seen inside an APC string (expecting the \ of ST)
 )
 
 // SGRParam represents an SGR parameter with optional subparameters
@@ -43,8 +46,11 @@ type Parser struct {
 	csiBuf          strings.Builder
 
 	// OSC accumulator
-	oscCmd int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
-	oscBuf strings.Builder // OSC command arguments
+	oscCmd          int             // OSC command number (e.g., 7000 for palette, 7001 for glyph)
+	oscBuf          strings.Builder // OSC command arguments
+	apcBuf          strings.Builder // APC string body (kitty graphics)
+	escIntermediate byte            // intermediate byte of an ESC ... sequence
+	kittyXfer       *kittyTransfer  // in-flight chunked kitty graphics transmission
 
 	// DCS accumulator (ESC P ... ST)
 	dcsBuf strings.Builder
@@ -258,6 +264,12 @@ func (p *Parser) processByte(b byte) {
 		p.handleDCS(b)
 	case stateDCSEsc:
 		p.handleDCSEsc(b)
+	case stateEscapeInter:
+		p.handleEscapeIntermediate(b)
+	case stateAPC:
+		p.handleAPC(b)
+	case stateAPCEsc:
+		p.handleAPCEsc(b)
 	}
 }
 
@@ -316,6 +328,9 @@ func (p *Parser) handleEscape(b byte) {
 	case 'P': // DCS - Device Control String (ESC P ... ST)
 		p.state = stateDCS
 		p.dcsBuf.Reset()
+	case '_': // APC - Application Program Command (ESC _ ... ST), kitty graphics
+		p.state = stateAPC
+		p.apcBuf.Reset()
 	case '(', ')': // Character set designation
 		p.state = stateCharset
 	case '#': // DEC line attribute commands (DECDHL, DECDWL, DECSWL, DECALN)
@@ -339,6 +354,7 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetInsertMode(false)
 		p.buffer.SetNewLineMode(false)
 		p.buffer.resetKeyModes()
+		p.buffer.resetKeyboardProtocol()
 		p.buffer.resetOSCColors()
 		p.buffer.SetProtectedAttr(false)
 		p.state = stateGround
@@ -359,9 +375,43 @@ func (p *Parser) handleEscape(b byte) {
 		p.buffer.SetApplicationKeypad(false)
 		p.state = stateGround
 	default:
+		// An INTERMEDIATE byte (0x20-0x2F) means the sequence continues: the
+		// byte after it is the final one. Dropping straight back to ground
+		// here left that final byte to be read from ground state and PRINTED —
+		// ESC SP F (S7C1T), which a well-behaved application sends on startup,
+		// put a stray "F" on the screen.
+		if b >= 0x20 && b <= 0x2F {
+			p.escIntermediate = b
+			p.state = stateEscapeInter
+			return
+		}
 		// Unknown escape sequence, return to ground state
 		p.state = stateGround
 	}
+}
+
+// handleEscapeIntermediate consumes the final byte of an ESC sequence carrying
+// an intermediate. The C1-transmission pair is the one worth acting on, and
+// only to confirm what this terminal already does; the rest are accepted and
+// ignored, which is what an unimplemented ESC sequence should be — silently,
+// rather than by leaving its final byte on the screen.
+func (p *Parser) handleEscapeIntermediate(b byte) {
+	inter := p.escIntermediate
+	p.escIntermediate = 0
+	p.state = stateGround
+
+	if inter == ' ' {
+		switch b {
+		case 'F': // S7C1T - send 7-bit C1 controls
+			// Already the case: every response this terminal builds uses the
+			// two-byte ESC form rather than an 8-bit C1 byte.
+		case 'G': // S8C1T - send 8-bit C1 controls
+			// Not honored: 8-bit C1 bytes collide with UTF-8 continuation
+			// bytes, so replies stay 7-bit whatever is asked for.
+		}
+	}
+	// Any other intermediate (ANSI conformance level, charset selection) is
+	// consumed and ignored.
 }
 
 // handleDECLineAttr handles ESC # sequences for line attributes
@@ -631,8 +681,15 @@ func (p *Parser) executeCSI(finalByte byte) {
 			p.buffer.SaveCursor()
 		}
 
-	case 'u': // RCP - Restore Cursor Position
-		p.buffer.RestoreCursor()
+	case 'u': // Kitty keyboard protocol (CSI ?/>/</= ... u), else RCP
+		// The keyboard-protocol family shares its final byte with restore
+		// cursor position, and is told apart by its private marker. Falling
+		// through to RCP on a query — as this did before the protocol was
+		// implemented — silently MOVED THE CURSOR every time an application
+		// asked whether the terminal supported extended keys.
+		if !p.executeKeyboardProtocol() {
+			p.buffer.RestoreCursor()
+		}
 
 	case 'n': // DSR - Device Status Report
 		p.executeDSR()
@@ -1259,6 +1316,8 @@ func (p *Parser) executeOSC() {
 		p.executeOSCColorFgBg(p.oscCmd, args)
 	case 52: // Clipboard (OSC 52)
 		p.executeOSCClipboard(args)
+	case 1337: // iTerm2 inline images
+		p.executeOSCImage(args)
 	case 7000: // Palette management
 		p.executeOSCPalette(args)
 	case 7001: // Glyph management
@@ -1696,5 +1755,45 @@ func (p *Parser) executeOSCScriptFont(args string) {
 		if len(parts) >= 3 {
 			p.buffer.SetScriptFont(parts[1], parts[2])
 		}
+	}
+}
+
+// handleAPC collects an Application Program Command string (ESC _ ... ST).
+// The kitty graphics protocol is the only APC this terminal implements; any
+// other is collected and discarded, which is what an APC a terminal does not
+// understand is for.
+func (p *Parser) handleAPC(b byte) {
+	if b == 0x07 { // BEL also terminates, as it does for OSC
+		p.executeAPC()
+		p.state = stateGround
+		return
+	}
+	if b == 0x1B { // ESC begins ST (ESC \); wait for the second byte
+		p.state = stateAPCEsc
+		return
+	}
+	p.apcBuf.WriteByte(b)
+}
+
+// handleAPCEsc resolves the byte after an ESC inside an APC string. '\'
+// completes ST and executes; anything else means the APC was interrupted, so
+// abandon it and reprocess the byte from the escape state it actually started.
+func (p *Parser) handleAPCEsc(b byte) {
+	if b == '\\' {
+		p.executeAPC()
+		p.state = stateGround
+		return
+	}
+	p.apcBuf.Reset()
+	p.state = stateEscape
+	p.handleEscape(b)
+}
+
+// executeAPC dispatches a completed APC string.
+func (p *Parser) executeAPC() {
+	s := p.apcBuf.String()
+	p.apcBuf.Reset()
+	if len(s) > 0 && s[0] == 'G' {
+		p.executeKittyGraphics(s[1:])
 	}
 }

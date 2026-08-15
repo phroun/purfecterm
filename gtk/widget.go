@@ -445,6 +445,19 @@ func NewWidget(cols, rows, scrollbackSize int) (*Widget, error) {
 	w.buffer = purfecterm.NewBuffer(cols, rows, scrollbackSize)
 	w.parser = purfecterm.NewParser(w.buffer)
 
+	// Answer terminal queries. The parser generates replies — CSI 14 t / 16 t /
+	// 18 t sizes, device attributes, cursor position, DECRQSS — but they are
+	// only ever DELIVERED if a sink is wired, and without one every query was
+	// answered into the void. A reply is input to the child process, exactly
+	// like a keystroke, so it goes out the same way. Read unlocked, as every
+	// other onInput call site here does: the sink runs inside Parse, and taking
+	// the widget lock here would deadlock anything that parses while holding it.
+	w.parser.SetResponseSink(func(data []byte) {
+		if fn := w.onInput; fn != nil {
+			fn(data)
+		}
+	})
+
 	// Initialize terminal capabilities (auto-updated on resize)
 	w.termCaps = &purfecterm.TerminalCapabilities{
 		TermType:      "gui-console",
@@ -1066,27 +1079,35 @@ func spriteCoordToPixels(coordinate float64, unitsPerCell int, cellSize int) flo
 // The decoder's RGBA is straight alpha in R,G,B,A order; ARGB32 is
 // premultiplied and, on a little-endian host, laid out B,G,R,A.
 func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	scale := w.deviceScale()
 	for _, im := range images {
 		img := im.Image
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
 			continue
 		}
-		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, img.W, img.H)
+		// A placement may show only part of its image (the kitty protocol's
+		// x/y/w/h crop), so the surface is built from the source rectangle
+		// rather than the whole bitmap.
+		sx, sy, sw, sh := im.SourceRect()
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+		surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, sw, sh)
 		if surface.Status() != cairo.STATUS_SUCCESS {
 			continue
 		}
-		stride := cairo.FormatStrideForWidth(cairo.FORMAT_ARGB32, img.W)
+		stride := cairo.FormatStrideForWidth(cairo.FORMAT_ARGB32, sw)
 		ptr := surface.GetData()
-		if ptr == nil || stride < img.W*4 {
+		if ptr == nil || stride < sw*4 {
 			continue
 		}
 		// Flush before touching the buffer directly, mark dirty after: cairo
 		// caches otherwise and the blit shows stale pixels.
 		surface.Flush()
-		data := unsafe.Slice((*byte)(ptr), stride*img.H)
-		for y := 0; y < img.H; y++ {
-			for x := 0; x < img.W; x++ {
-				si := (y*img.W + x) * 4
+		data := unsafe.Slice((*byte)(ptr), stride*sh)
+		for y := 0; y < sh; y++ {
+			for x := 0; x < sw; x++ {
+				si := ((y+sy)*img.W + (x + sx)) * 4
 				r := uint16(img.RGBA[si])
 				g := uint16(img.RGBA[si+1])
 				b := uint16(img.RGBA[si+2])
@@ -1104,6 +1125,23 @@ func (w *Widget) renderImages(cr *cairo.Context, images []*purfecterm.PlacedImag
 		pixelY := float64((im.Row + scrollOffsetY) * charHeight)
 		cr.Save()
 		cr.Translate(pixelX, pixelY)
+		// The surface carries the DECODED pixels; the image may be asked to
+		// occupy a different size (see PlacedImage.DestSize). Scaling here puts
+		// the source surface into the scaled space, so it stretches to fit.
+		//
+		// DestSize is in DEVICE pixels, matching the cell size reported to the
+		// program; cairo draws in user units. Dividing by the scale factor is
+		// what makes a HiDPI image sharp: a device-resolution image is drawn
+		// into half the user-space box on a 2x display, so one source pixel
+		// covers exactly one device pixel rather than being doubled. At scale 1
+		// this is the identity, and a Sixel asking for its own size then leaves
+		// the blit 1:1.
+		destW, destH := im.DestSize()
+		dw := float64(destW) / scale
+		dh := float64(destH) / scale
+		if dw != float64(sw) || dh != float64(sh) {
+			cr.Scale(dw/float64(sw), dh/float64(sh))
+		}
 		cr.SetSourceSurface(surface, 0, 0)
 		cr.Paint()
 		cr.Restore()
@@ -1503,7 +1541,37 @@ func (w *Widget) updateFontMetrics() {
 		}
 	}
 
+	// Tell the emulator the cell size it is drawing into. Without this the
+	// buffer has no idea and falls back to a nominal 10x20, which shows up two
+	// ways: CSI 14 t / CSI 16 t answer 0x0, so a program like chafa sizes its
+	// image for a cell we do not have; and PlaceSixelImage reserves
+	// imageHeight/20 rows for an image that occupies imageHeight/charHeight of
+	// them, leaving a blank gap under every image.
+	//
+	// The reported size is in DEVICE pixels, which on a scaled display is not
+	// the cairo user units the glyphs are laid out in. That is the point: a
+	// program sizing an image from CSI 16 t should produce one at the display's
+	// real resolution, and renderImages scales it back down so a source pixel
+	// lands on a device pixel instead of being blown up by the scale factor.
+	if w.buffer != nil {
+		scale := w.deviceScale()
+		w.buffer.SetCellPixelSize(int(float64(w.charWidth)*scale), int(float64(w.charHeight)*scale))
+	}
+
 	_ = descent // descent is included in height
+}
+
+// deviceScale is the widget's device-pixel scale factor: 2 on a HiDPI display
+// where one cairo user unit covers two device pixels, 1 everywhere else. Never
+// returns less than 1, so an unrealized widget cannot collapse a size to zero.
+func (w *Widget) deviceScale() float64 {
+	if w.drawingArea == nil {
+		return 1
+	}
+	if sf := w.drawingArea.GetScaleFactor(); sf > 1 {
+		return float64(sf)
+	}
+	return 1
 }
 
 // renderScreenSplits renders screen split regions using a scanline approach.
@@ -1861,6 +1929,13 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 
 	// Render behind sprites (visible where text has default background)
 	w.renderSprites(cr, behindSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
+
+	// Images at a NEGATIVE z-index go under the text, which is what makes
+	// text-over-image work; the rest are drawn after the glyphs below.
+	imagesBelow, imagesAbove := w.buffer.GetImagesByZ()
+	purfecterm.LogPlacements("gtk", append(append([]*purfecterm.PlacedImage{},
+		imagesBelow...), imagesAbove...))
+	w.renderImages(cr, imagesBelow, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Set up font
 	cr.SelectFontFace(fontFamily, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
@@ -2326,7 +2401,7 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 	w.renderSprites(cr, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
 	// Render cell-anchored bitmap images (Sixel)
-	w.renderImages(cr, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
+	w.renderImages(cr, imagesAbove, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits overlay specific screen regions with different buffer positions
@@ -2460,7 +2535,17 @@ func (w *Widget) screenToCell(screenX, screenY float64) (cellX, cellY int) {
 
 // sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
 // Returns true if the event was consumed by mouse reporting.
+// sendMouseEventAt is sendMouseEvent with the event's RAW position, for the
+// pixel-reporting mode. Callers that have it should use this.
+func (w *Widget) sendMouseEventAt(button, cellX, cellY int, pxX, pxY float64, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, pxX, pxY, true, press)
+}
+
 func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, 0, 0, false, press)
+}
+
+func (w *Widget) sendMouseEventInternal(button, cellX, cellY int, pxX, pxY float64, havePixels bool, press bool) bool {
 	w.mu.Lock()
 	mouseReporting := w.mouseReportingEnabled
 	onInput := w.onInput
@@ -2483,8 +2568,37 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	if !w.buffer.IsFlexWidthModeEnabled() {
 		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
 	}
-	// Convert to 1-based coordinates
-	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
+	// SGR-Pixels (?1016) reports PIXELS, not cells. The encoder is agnostic —
+	// it writes whatever coordinates it is handed — so sending cell numbers
+	// under 1016 told the application every event happened within the first
+	// few pixels of the window. An application that asks for pixel precision
+	// is one that needs it: a browser cannot place a click on a cell grid.
+	//
+	// The pixels are DEVICE pixels, matching the cell size reported by
+	// CSI 16 t, so the two describe the same space. A renderer that pins a
+	// synthetic pointer grid gets that instead, which is what it is for.
+	x, y := reportX+1, cellY+1
+	if encodingMode == 1016 && havePixels {
+		scale := w.deviceScale()
+		unitW, unitH := w.buffer.GetPointerPixelUnit()
+		cellW, cellH := w.buffer.GetCellPixelSize()
+		px := (pxX - float64(terminalLeftPadding)) * scale
+		py := pxY * scale
+		if unitW > 0 && cellW > 0 && unitW != cellW {
+			px = px * float64(unitW) / float64(cellW)
+		}
+		if unitH > 0 && cellH > 0 && unitH != cellH {
+			py = py * float64(unitH) / float64(cellH)
+		}
+		if px < 0 {
+			px = 0
+		}
+		if py < 0 {
+			py = 0
+		}
+		x, y = int(px)+1, int(py)+1
+	}
+	data := purfecterm.EncodeMouseEvent(button, x, y, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true
@@ -2527,7 +2641,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		if forwardToPTY && !hasShift {
 			// Forward right-click to PTY
 			mods := gdkMouseModifiers(state)
-			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			w.sendMouseEventAt(purfecterm.MouseButtonRight|mods, cellX, cellY, x, y, true)
 			da.GrabFocus()
 			return true
 		}
@@ -2551,7 +2665,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 		mods := gdkMouseModifiers(state)
 		w.mouseDown = true // Track for motion events
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, x, y, true)
 		da.GrabFocus()
 		return true
 	}
@@ -2594,7 +2708,7 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 		mods := gdkMouseModifiers(state)
 		w.mouseDown = false
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, x, y, false)
 		return true
 	}
 
@@ -2632,7 +2746,7 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			if w.mouseDown {
 				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
 			}
-			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+			w.sendMouseEventAt(btn|mods, cellX, cellY, float64(x), float64(y), true)
 		}
 		// Request more motion events to prevent coalescing
 		C.request_motion_events(motion)
@@ -2994,6 +3108,18 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 
 	if onInput == nil {
 		return false
+	}
+
+	// The kitty keyboard protocol takes precedence when an application has
+	// negotiated it. This is gated on the flags being non-zero, so an
+	// application that never asked sees byte-for-byte what it always did and
+	// the legacy switch below stays the only path in play.
+	if data := w.encodeKittyKey(keyval,
+		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, hasSuper,
+			state&uint(gdk.LOCK_MASK) != 0, state&uint(gdk.MOD2_MASK) != 0),
+		purfecterm.KeyPress); data != nil {
+		onInput(data)
+		return true
 	}
 
 	// Calculate xterm-style modifier parameter

@@ -33,12 +33,13 @@ static int unlock_pt(int fd) {
     return unlockpt(fd);
 }
 
-static int set_winsize(int fd, unsigned short rows, unsigned short cols) {
+static int set_winsize(int fd, unsigned short rows, unsigned short cols,
+                       unsigned short xpixel, unsigned short ypixel) {
     struct winsize ws;
     ws.ws_row = rows;
     ws.ws_col = cols;
-    ws.ws_xpixel = 0;
-    ws.ws_ypixel = 0;
+    ws.ws_xpixel = xpixel;
+    ws.ws_ypixel = ypixel;
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
 
@@ -56,6 +57,11 @@ import (
 type UnixPTY struct {
 	master *os.File
 	slave  *os.File
+
+	// The window's last reported size in pixels, so a plain Resize keeps it
+	// rather than silently zeroing what a graphical client depends on.
+	widthPx  int
+	heightPx int
 }
 
 // NewPTY creates a new PTY
@@ -149,13 +155,39 @@ func (p *UnixPTY) Write(b []byte) (int, error) {
 	return p.master.Write(b)
 }
 
-// Resize resizes the PTY
+// Resize resizes the PTY, keeping whatever pixel size was last set.
 func (p *UnixPTY) Resize(cols, rows int) error {
+	return p.ResizeWithPixels(cols, rows, p.widthPx, p.heightPx)
+}
+
+// ResizeWithPixels resizes the PTY and reports the window's size in PIXELS as
+// well as in cells.
+//
+// The pixel fields are not decoration. A program that draws pictures rather
+// than characters sizes its output from them — reading TIOCGWINSZ is cheaper
+// than an escape-sequence round trip, so a graphical client asks the kernel,
+// not the terminal. Left at zero, as they were, such a client computes a
+// zero-sized viewport and renders NOTHING, with nothing to report: no error, no
+// complaint, just a blank screen that looks like a broken terminal.
+func (p *UnixPTY) ResizeWithPixels(cols, rows, widthPx, heightPx int) error {
+	p.widthPx, p.heightPx = widthPx, heightPx
 	fd := C.int(p.master.Fd())
-	if C.set_winsize(fd, C.ushort(rows), C.ushort(cols)) != 0 {
+	if C.set_winsize(fd, C.ushort(rows), C.ushort(cols),
+		C.ushort(clampUint16(widthPx)), C.ushort(clampUint16(heightPx))) != 0 {
 		return errors.New("TIOCSWINSZ failed")
 	}
 	return nil
+}
+
+// clampUint16 keeps a pixel dimension inside the field the kernel gives it.
+func clampUint16(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 65535 {
+		return 65535
+	}
+	return v
 }
 
 // Close closes the PTY

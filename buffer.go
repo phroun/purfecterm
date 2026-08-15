@@ -120,28 +120,51 @@ type Buffer struct {
 	bracketedPasteMode bool
 
 	// Mouse tracking modes (set via DEC Private Mode sequences)
-	mouseTrackingMode  int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
-	mouseEncodingMode  int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
+	mouseTrackingMode int // 0=off, 1000=X11 normal, 1002=cell motion, 1003=all motion
+	mouseEncodingMode int // 0=X10 default, 1006=SGR extended, 1016=SGR-Pixels
 
-	// Cell size in device pixels, reported to a hosted app via CSI 16 t and used
-	// as the unit for SGR-Pixels (?1016) mouse reports. 0 = unknown: a headless
-	// buffer has no inherent pixel size, so a renderer that wants pixel geometry
-	// pushes its cell size here (SetCellPixelSize).
+	// Cell size in device pixels: the REAL geometry a renderer draws into.
+	// Reported by CSI 14 t / CSI 16 t and used to size and place images. 0 =
+	// unknown: a headless buffer has no inherent pixel size, so a renderer that
+	// wants pixel geometry pushes its cell size here (SetCellPixelSize).
 	cellPixelWidth  int
 	cellPixelHeight int
 
-	currentFg        Color
-	currentBg            Color
-	currentBold          bool
-	currentItalic        bool
-	currentUnderline     bool
-	currentUnderlineStyle UnderlineStyle
-	currentUnderlineColor Color
+	// The unit a renderer encodes SGR-Pixels (?1016) mouse coordinates in, when
+	// that is deliberately NOT the real cell size. These are two different jobs
+	// and one number cannot do both: image geometry needs the truth, while
+	// pointer reporting sometimes wants a fixed synthetic grid — a renderer
+	// whose real cell size moves with font zoom or fractional scaling can pin a
+	// constant number of sub-units per cell so the integer cell is always
+	// recoverable, which rounding against real pixels cannot promise. 0 falls
+	// back to the cell size, which is what an ordinary renderer wants.
+	pointerPixelWidth  int
+	pointerPixelHeight int
+
+	// Kitty keyboard protocol enhancement flags, kept per screen so a
+	// full-screen application that pushes flags on entry and pops them on exit
+	// cannot leave the shell it suspends back to receiving key events it
+	// cannot read.
+	mainKeyboard keyboardState
+	altKeyboard  keyboardState
+
+	// Transmitted kitty graphics images, held independently of their
+	// placements so one can be shown, cleared and shown again without a
+	// retransmission. Nil until the protocol is first used.
+	kittyImages *kittyImageStore
+
+	currentFg                Color
+	currentBg                Color
+	currentBold              bool
+	currentItalic            bool
+	currentUnderline         bool
+	currentUnderlineStyle    UnderlineStyle
+	currentUnderlineColor    Color
 	currentHasUnderlineColor bool
-	currentReverse       bool
-	currentBlink         bool
-	currentStrikethrough bool
-	currentFlexWidth     bool // Current attribute for East Asian Width mode
+	currentReverse           bool
+	currentBlink             bool
+	currentStrikethrough     bool
+	currentFlexWidth         bool // Current attribute for East Asian Width mode
 
 	// Flexible cell width mode (East Asian Width)
 	flexWidthMode      bool               // When true, new chars get FlexWidth=true and calculated CellWidth
@@ -172,11 +195,11 @@ type Buffer struct {
 	lastManualVertScroll time.Time // When user last manually scrolled vertically
 
 	// Horizontal auto-scroll tracking
-	lastHorizCursorMoveDir  int       // -1=left, 0=unknown, 1=right (for horiz auto-scroll)
-	lastManualHorizScroll   time.Time // When user last manually scrolled horizontally
-	lastScrollCausingEvent  time.Time // When a scroll-causing event last occurred (line to scrollback)
+	lastHorizCursorMoveDir  int         // -1=left, 0=unknown, 1=right (for horiz auto-scroll)
+	lastManualHorizScroll   time.Time   // When user last manually scrolled horizontally
+	lastScrollCausingEvent  time.Time   // When a scroll-causing event last occurred (line to scrollback)
 	horizMemos              []HorizMemo // Per-scanline horizontal scroll memos (populated during paint)
-	isAbsoluteHorizPosition bool      // True if last horiz move was absolute (CSI H/f/G)
+	isAbsoluteHorizPosition bool        // True if last horiz move was absolute (CSI H/f/G)
 
 	// Auto-scroll mode control (DEC Private Mode)
 	autoScrollDisabled bool // When true, cursor-following auto-scroll is disabled
@@ -215,11 +238,11 @@ type Buffer struct {
 	leftRightMarginMode bool
 
 	// Standard ANSI modes and tab stops.
-	currentProtected bool        // DECSCA: written cells are protected from selective erase
-	insertMode      bool         // IRM (mode 4): printed chars insert (shift right)
-	newLineMode     bool         // LNM (mode 20): output LF also does CR
-	lastPrintedChar rune         // for REP (CSI b)
-	tabStops        map[int]bool // horizontal tab stops (visual columns)
+	currentProtected bool         // DECSCA: written cells are protected from selective erase
+	insertMode       bool         // IRM (mode 4): printed chars insert (shift right)
+	newLineMode      bool         // LNM (mode 20): output LF also does CR
+	lastPrintedChar  rune         // for REP (CSI b)
+	tabStops         map[int]bool // horizontal tab stops (visual columns)
 
 	// Keyboard/interaction modes an input adapter consults to encode keys.
 	appCursorKeys  bool // DECCKM (?1): arrows send ESC O x, not ESC [ x
@@ -307,10 +330,10 @@ type Buffer struct {
 	// instead of version tracking, so alternating between glyph frames will be cache hits
 
 	// Sprite overlay system
-	sprites      map[int]*Sprite        // Sprite ID -> Sprite
-	cropRects    map[int]*CropRectangle // Crop rectangle ID -> CropRectangle
-	spriteUnitX  int                    // Subdivisions per cell horizontally (default 8)
-	spriteUnitY  int                    // Subdivisions per cell vertically (default 8)
+	sprites     map[int]*Sprite        // Sprite ID -> Sprite
+	cropRects   map[int]*CropRectangle // Crop rectangle ID -> CropRectangle
+	spriteUnitX int                    // Subdivisions per cell horizontally (default 8)
+	spriteUnitY int                    // Subdivisions per cell vertically (default 8)
 
 	// Screen crop (in sprite coordinate units, -1 = no crop)
 	widthCrop  int // X coordinate beyond which nothing renders
@@ -328,46 +351,46 @@ type Buffer struct {
 // The first logical scanline (0) begins after the scrollback area - no splits can occur
 // in the scrollback area above the yellow dotted line.
 type ScreenSplit struct {
-	ScreenY         int     // Y in sprite units relative to logical screen start (NOT absolute screen)
-	BufferRow       int     // 0-indexed row in logical screen to start drawing from
-	BufferCol       int     // 0-indexed column in logical screen to start drawing from
-	TopFineScroll   int     // 0 to (subdivisions-1), higher = more of top row clipped
-	LeftFineScroll  int     // 0 to (subdivisions-1), higher = more of left column clipped
-	CharWidthScale  float64 // Character width multiplier (0 = inherit from main screen)
-	LineDensity     int     // Line density override (0 = inherit from main screen)
+	ScreenY        int     // Y in sprite units relative to logical screen start (NOT absolute screen)
+	BufferRow      int     // 0-indexed row in logical screen to start drawing from
+	BufferCol      int     // 0-indexed column in logical screen to start drawing from
+	TopFineScroll  int     // 0 to (subdivisions-1), higher = more of top row clipped
+	LeftFineScroll int     // 0 to (subdivisions-1), higher = more of left column clipped
+	CharWidthScale float64 // Character width multiplier (0 = inherit from main screen)
+	LineDensity    int     // Line density override (0 = inherit from main screen)
 }
 
 // NewBuffer creates a new terminal buffer
 func NewBuffer(cols, rows, maxScrollback int) *Buffer {
 	b := &Buffer{
-		cols:                cols,
-		rows:                rows,
-		logicalCols:         0, // 0 means use physical
-		logicalRows:         0, // 0 means use physical
-		cursorVisible:       true,
-		currentFg:           DefaultForeground,
-		currentBg:           DefaultBackground,
-		maxScrollback:       maxScrollback,
-		screenInfo:          DefaultScreenInfo(),
-		dirty:               true,
-		darkTheme:           true, // Default to dark theme
-		preferredDarkTheme:  true, // User preference defaults to dark
-		lineDensity:         25,            // Default line density
-		currentBGP:          -1,            // -1 = use foreground color code as palette
-		fontSlots:           map[uint8]string{},
+		cols:               cols,
+		rows:               rows,
+		logicalCols:        0, // 0 means use physical
+		logicalRows:        0, // 0 means use physical
+		cursorVisible:      true,
+		currentFg:          DefaultForeground,
+		currentBg:          DefaultBackground,
+		maxScrollback:      maxScrollback,
+		screenInfo:         DefaultScreenInfo(),
+		dirty:              true,
+		darkTheme:          true, // Default to dark theme
+		preferredDarkTheme: true, // User preference defaults to dark
+		lineDensity:        25,   // Default line density
+		currentBGP:         -1,   // -1 = use foreground color code as palette
+		fontSlots:          map[uint8]string{},
 		scriptFonts:        map[string]string{},
-		palettes:     make(map[int]*Palette),
-		customGlyphs: make(map[rune]*CustomGlyph),
-		sprites:             make(map[int]*Sprite),
-		cropRects:           make(map[int]*CropRectangle),
-		spriteUnitX:         8,  // Default: 8 subdivisions per cell
-		spriteUnitY:         8,  // Default: 8 subdivisions per cell
-		widthCrop:           -1, // -1 = no crop
-		heightCrop:          -1, // -1 = no crop
-		screenSplits:        make(map[int]*ScreenSplit),
-		autoWrapMode:        true, // DECAWM default enabled
-		smartWordWrap:       true, // Smart word wrap default enabled
-		sixelScrolling:      true, // sixel images advance the cursor below them
+		palettes:           make(map[int]*Palette),
+		customGlyphs:       make(map[rune]*CustomGlyph),
+		sprites:            make(map[int]*Sprite),
+		cropRects:          make(map[int]*CropRectangle),
+		spriteUnitX:        8,  // Default: 8 subdivisions per cell
+		spriteUnitY:        8,  // Default: 8 subdivisions per cell
+		widthCrop:          -1, // -1 = no crop
+		heightCrop:         -1, // -1 = no crop
+		screenSplits:       make(map[int]*ScreenSplit),
+		autoWrapMode:       true, // DECAWM default enabled
+		smartWordWrap:      true, // Smart word wrap default enabled
+		sixelScrolling:     true, // sixel images advance the cursor below them
 	}
 	b.initScreen()
 	return b
@@ -644,6 +667,14 @@ func (b *Buffer) adjustScreenToRows(targetRows int) {
 			b.pushLineToScrollback(b.screen[0], b.lineInfos[0])
 			b.screen = b.screen[1:]
 			b.lineInfos = b.lineInfos[1:]
+		}
+
+		// Shrinking the window moves the text up exactly as a scroll does, so
+		// anchored images have to come with it. This is the one off-screen path
+		// that does not run through scrollRegionUp, so without this an image
+		// stays where it was while the text slides out from under it.
+		if linesToPush > 0 {
+			b.shiftImagesLocked(-linesToPush, 0, currentRows-1)
 		}
 
 		// Adjust cursor position to stay with content
@@ -952,21 +983,6 @@ func (b *Buffer) EmitRemainingScreenLines() {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // SetBracketedPasteMode enables or disables bracketed paste mode
 func (b *Buffer) SetBracketedPasteMode(enabled bool) {
 	b.mu.Lock()
@@ -1011,16 +1027,55 @@ func (b *Buffer) GetMouseEncodingMode() int {
 	return b.mouseEncodingMode
 }
 
-// SetCellPixelSize records the terminal's cell size in device pixels. A
+// SetCellPixelSize records the terminal's REAL cell size in device pixels. A
 // headless buffer has no inherent pixel size; a renderer that knows its cell
-// geometry sets it here so the terminal can answer CSI 16 t and so SGR-Pixels
-// (?1016) mouse reports carry meaningful pixel coordinates. Zero leaves the
-// size unknown.
+// geometry sets it here so the terminal can answer CSI 14 t / CSI 16 t, and so
+// images can be sized and placed against the grid they are drawn into. Zero
+// leaves the size unknown.
+//
+// This must be the truth, not a convenient scale: a program reads CSI 16 t to
+// decide how many pixels to render an image at, and PlaceImage divides by it to
+// work out how many rows that image covers. For a synthetic pointer-reporting
+// grid, see SetPointerPixelUnit — that is a separate axis on purpose.
 func (b *Buffer) SetCellPixelSize(width, height int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cellPixelWidth = width
 	b.cellPixelHeight = height
+}
+
+// SetPointerPixelUnit records the unit a renderer encodes SGR-Pixels (?1016)
+// mouse coordinates in, for a renderer that deliberately does not report real
+// pixels there. Zero (the default) means pointer coordinates are in the real
+// cell size, which is what an ordinary renderer wants.
+//
+// This exists because the two jobs genuinely conflict. Image geometry needs the
+// real cell size or images come out the wrong size and reserve the wrong number
+// of rows. Pointer reporting sometimes wants a FIXED grid instead: a renderer
+// whose real cell size moves with font zoom or fractional scaling can pin a
+// constant number of sub-units per cell, so the integer cell is always
+// recoverable from a coordinate — a guarantee rounding against real device
+// pixels cannot make. Setting one no longer disturbs the other.
+func (b *Buffer) SetPointerPixelUnit(width, height int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pointerPixelWidth = width
+	b.pointerPixelHeight = height
+}
+
+// GetPointerPixelUnit returns the unit for ?1016 pointer coordinates, falling
+// back per-axis to the real cell size when no synthetic grid is set.
+func (b *Buffer) GetPointerPixelUnit() (width, height int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	width, height = b.pointerPixelWidth, b.pointerPixelHeight
+	if width <= 0 {
+		width = b.cellPixelWidth
+	}
+	if height <= 0 {
+		height = b.cellPixelHeight
+	}
+	return width, height
 }
 
 // GetCellPixelSize returns the cell size in device pixels (0,0 when unset).
@@ -1079,30 +1134,6 @@ func (b *Buffer) GetAmbiguousWidthMode() AmbiguousWidthMode {
 	defer b.mu.RUnlock()
 	return b.ambiguousWidthMode
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // SetAttributes sets current text rendering attributes
 func (b *Buffer) SetAttributes(fg, bg Color, bold, italic, underline, reverse bool) {
@@ -1308,27 +1339,6 @@ func (b *Buffer) SetStrikethrough(strikethrough bool) {
 	b.currentStrikethrough = strikethrough
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // SetAutoWrapMode enables or disables auto-wrap at end of line (DECAWM, mode 7).
 // When disabled, the cursor stays at the last column and characters overwrite that position.
 func (b *Buffer) SetAutoWrapMode(enabled bool) {
@@ -1359,28 +1369,3 @@ func (b *Buffer) IsSmartWordWrapEnabled() bool {
 	defer b.mu.RUnlock()
 	return b.smartWordWrap
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

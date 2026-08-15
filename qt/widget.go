@@ -226,6 +226,19 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 	w.buffer = purfecterm.NewBuffer(cols, rows, scrollbackSize)
 	w.parser = purfecterm.NewParser(w.buffer)
 
+	// Answer terminal queries. The parser generates replies — CSI 14 t / 16 t /
+	// 18 t sizes, device attributes, cursor position, DECRQSS — but they are
+	// only ever DELIVERED if a sink is wired, and without one every query was
+	// answered into the void. A reply is input to the child process, exactly
+	// like a keystroke, so it goes out the same way. Read unlocked, as every
+	// other onInput call site here does: the sink runs inside Parse, and taking
+	// the widget lock here would deadlock anything that parses while holding it.
+	w.parser.SetResponseSink(func(data []byte) {
+		if fn := w.onInput; fn != nil {
+			fn(data)
+		}
+	})
+
 	// Initialize terminal capabilities (auto-updated on resize)
 	w.termCaps = &purfecterm.TerminalCapabilities{
 		TermType:      "gui-console",
@@ -915,6 +928,36 @@ func (w *Widget) updateFontMetrics() {
 	if w.charHeight < 1 {
 		w.charHeight = effectiveSize * 12 / 10
 	}
+
+	// Tell the emulator the cell size it is drawing into. Without this the
+	// buffer has no idea and falls back to a nominal 10x20, which shows up two
+	// ways: CSI 14 t / CSI 16 t answer 0x0, so a program like chafa sizes its
+	// image for a cell we do not have; and PlaceSixelImage reserves
+	// imageHeight/20 rows for an image that occupies imageHeight/charHeight of
+	// them, leaving a blank gap under every image.
+	//
+	// The reported size is in DEVICE pixels, which on a scaled display is not
+	// the logical coordinates the glyphs are laid out in. That is the point: a
+	// program sizing an image from CSI 16 t should produce one at the display's
+	// real resolution, and renderImages scales it back down so a source pixel
+	// lands on a device pixel instead of being blown up by the ratio.
+	if w.buffer != nil {
+		scale := w.deviceScale()
+		w.buffer.SetCellPixelSize(int(float64(w.charWidth)*scale), int(float64(w.charHeight)*scale))
+	}
+}
+
+// deviceScale is the widget's device pixel ratio: 2 on a HiDPI display where
+// one logical coordinate covers two device pixels, 1 everywhere else. Never
+// returns less than 1, so an unrealized widget cannot collapse a size to zero.
+func (w *Widget) deviceScale() float64 {
+	if w.widget == nil {
+		return 1
+	}
+	if r := w.widget.DevicePixelRatioF(); r > 1 {
+		return r
+	}
+	return 1
 }
 
 // renderCustomGlyph renders a custom glyph for a cell at the specified position
@@ -1111,30 +1154,56 @@ func spriteCoordToPixelsQt(coordinate float64, unitsPerCell int, cellSize int) f
 // miqt does not finalize C++ objects on its own, so the per-frame image is
 // deleted after the draw — without it every repaint leaks an image.
 func (w *Widget) renderImages(painter *qt.QPainter, images []*purfecterm.PlacedImage, charWidth, charHeight, scrollOffsetY, horizOffsetX int) {
+	scale := w.deviceScale()
 	for _, im := range images {
 		img := im.Image
 		if img == nil || img.W == 0 || img.H == 0 || len(img.RGBA) < img.W*img.H*4 {
 			continue
 		}
-		qimg := qt.NewQImage3(img.W, img.H, qt.QImage__Format_RGBA8888)
+		// A placement may show only part of its image (the kitty protocol's
+		// x/y/w/h crop), so only the source rectangle is copied across.
+		sx, sy, sw, sh := im.SourceRect()
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+		qimg := qt.NewQImage3(sw, sh, qt.QImage__Format_RGBA8888)
 		if qimg.IsNull() {
 			qimg.Delete() // allocation failed, but the wrapper object is still ours
 			continue
 		}
 		bytesPerLine := qimg.BytesPerLine()
 		bits := qimg.Bits()
-		if bits == nil || bytesPerLine < img.W*4 {
+		if bits == nil || bytesPerLine < sw*4 {
 			qimg.Delete()
 			continue
 		}
-		dst := unsafe.Slice(bits, bytesPerLine*img.H)
-		for y := 0; y < img.H; y++ {
-			copy(dst[y*bytesPerLine:y*bytesPerLine+img.W*4], img.RGBA[y*img.W*4:])
+		dst := unsafe.Slice(bits, bytesPerLine*sh)
+		for y := 0; y < sh; y++ {
+			src := ((y+sy)*img.W + sx) * 4
+			copy(dst[y*bytesPerLine:y*bytesPerLine+sw*4], img.RGBA[src:])
 		}
 
 		pixelX := im.Col*charWidth + terminalLeftPadding - horizOffsetX*charWidth
 		pixelY := (im.Row + scrollOffsetY) * charHeight
-		painter.DrawImage9(pixelX, pixelY, qimg)
+		// The QImage carries the DECODED pixels; the image may be asked to
+		// occupy a different size (see PlacedImage.DestSize), in which case it
+		// is drawn into a target rect and Qt scales.
+		//
+		// DestSize is in DEVICE pixels, matching the cell size reported to the
+		// program; QPainter draws in logical coordinates. Dividing by the ratio
+		// is what makes a HiDPI image sharp: a device-resolution image is drawn
+		// into half the logical box on a 2x display, so one source pixel covers
+		// exactly one device pixel rather than being doubled. At ratio 1 a Sixel
+		// asking for its own size takes the plain 1:1 point draw.
+		destW, destH := im.DestSize()
+		dw := int(float64(destW)/scale + 0.5)
+		dh := int(float64(destH)/scale + 0.5)
+		if dw != sw || dh != sh {
+			target := qt.NewQRect4(pixelX, pixelY, dw, dh)
+			painter.DrawImage6(target, qimg)
+		} else {
+			painter.DrawImage9(pixelX, pixelY, qimg)
+		}
 		qimg.Delete()
 	}
 }
@@ -1646,6 +1715,11 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 	// Render behind sprites (visible where text has default background)
 	w.renderSprites(painter, behindSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
+	// Images at a NEGATIVE z-index go under the text, which is what makes
+	// text-over-image work; the rest are drawn after the glyphs below.
+	imagesBelow, imagesAbove := w.buffer.GetImagesByZ()
+	w.renderImages(painter, imagesBelow, charWidth, charHeight, scrollOffset, horizOffset)
+
 	// Set up font
 	font := qt.NewQFont6(fontFamily, fontSize)
 	font.SetFixedPitch(true)
@@ -2117,7 +2191,7 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 	w.renderSprites(painter, frontSprites, charWidth, charHeight, scheme, isDark, scrollOffset, horizOffset)
 
 	// Render cell-anchored bitmap images (Sixel)
-	w.renderImages(painter, w.buffer.GetImages(), charWidth, charHeight, scrollOffset, horizOffset)
+	w.renderImages(painter, imagesAbove, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Render screen splits if any are defined
 	// Splits use logical scanline numbers relative to the scroll boundary
@@ -2282,6 +2356,26 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	// We want hasCtrl to mean the physical Ctrl key and hasMeta to mean Command
 	if runtime.GOOS == "darwin" {
 		hasCtrl, hasMeta = hasMeta, hasCtrl
+	}
+
+	// The kitty keyboard protocol takes precedence when an application has
+	// negotiated it. This is gated on the flags being non-zero, so an
+	// application that never asked sees byte-for-byte what it always did and
+	// the legacy switch below stays the only path in play.
+	eventType := purfecterm.KeyPress
+	if event.IsAutoRepeat() {
+		eventType = purfecterm.KeyRepeat
+	}
+	// Caps Lock and Num Lock are deliberately reported as unset: Qt's
+	// KeyboardModifiers does not carry lock state (KeypadModifier says the key
+	// came FROM the numpad, which is a different question), and inventing a bit
+	// would corrupt the modifier value on every keystroke rather than leave one
+	// rarely-used report absent.
+	if data := w.encodeKittyKey(qt.Key(key), event.Text(),
+		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, false, false),
+		eventType); data != nil {
+		onInput(data)
+		return
 	}
 
 	var data []byte
@@ -2768,7 +2862,17 @@ func isModifierKey(key qt.Key) bool {
 
 // sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
 // Returns true if the event was consumed by mouse reporting.
+// sendMouseEventAt is sendMouseEvent with the event's RAW position, for the
+// pixel-reporting mode. Callers that have it should use this.
+func (w *Widget) sendMouseEventAt(button, cellX, cellY, pxX, pxY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, pxX, pxY, true, press)
+}
+
 func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, 0, 0, false, press)
+}
+
+func (w *Widget) sendMouseEventInternal(button, cellX, cellY, pxX, pxY int, havePixels bool, press bool) bool {
 	w.mu.Lock()
 	mouseReporting := w.mouseReportingEnabled
 	onInput := w.onInput
@@ -2791,7 +2895,37 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	if !w.buffer.IsFlexWidthModeEnabled() {
 		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
 	}
-	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
+	// SGR-Pixels (?1016) reports PIXELS, not cells. The encoder is agnostic —
+	// it writes whatever coordinates it is handed — so sending cell numbers
+	// under 1016 told the application every event happened within the first
+	// few pixels of the window. An application that asks for pixel precision
+	// is one that needs it: a browser cannot place a click on a cell grid.
+	//
+	// The pixels are DEVICE pixels, matching the cell size reported by
+	// CSI 16 t, so the two describe the same space. A renderer that pins a
+	// synthetic pointer grid gets that instead, which is what it is for.
+	rx, ry := reportX+1, cellY+1
+	if encodingMode == 1016 && havePixels {
+		scale := w.deviceScale()
+		unitW, unitH := w.buffer.GetPointerPixelUnit()
+		cellW, cellH := w.buffer.GetCellPixelSize()
+		px := (float64(pxX) - float64(terminalLeftPadding)) * scale
+		py := float64(pxY) * scale
+		if unitW > 0 && cellW > 0 && unitW != cellW {
+			px = px * float64(unitW) / float64(cellW)
+		}
+		if unitH > 0 && cellH > 0 && unitH != cellH {
+			py = py * float64(unitH) / float64(cellH)
+		}
+		if px < 0 {
+			px = 0
+		}
+		if py < 0 {
+			py = 0
+		}
+		rx, ry = int(px)+1, int(py)+1
+	}
+	data := purfecterm.EncodeMouseEvent(button, rx, ry, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true
@@ -2832,7 +2966,7 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 		if forwardToPTY {
 			// Forward right-click to PTY
 			mods := qtMouseModifiers(modifiers)
-			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			w.sendMouseEventAt(purfecterm.MouseButtonRight|mods, cellX, cellY, pos.X(), pos.Y(), true)
 			w.widget.SetFocus()
 			return
 		}
@@ -2856,7 +2990,7 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 		}
 		mods := qtMouseModifiers(modifiers)
 		w.mouseDown = true
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, pos.X(), pos.Y(), true)
 		w.widget.SetFocus()
 		return
 	}
@@ -2894,7 +3028,7 @@ func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
 		w.mouseDown = false
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, pos.X(), pos.Y(), false)
 		return
 	}
 
@@ -2926,7 +3060,7 @@ func (w *Widget) mouseMoveEvent(event *qt.QMouseEvent) {
 			if w.mouseDown {
 				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
 			}
-			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+			w.sendMouseEventAt(btn|mods, cellX, cellY, pos.X(), pos.Y(), true)
 		}
 		return
 	}
