@@ -69,13 +69,21 @@ func TestEnterKeysRoundTripAsTwoKeys(t *testing.T) {
 	}
 }
 
-// Neither key may fall through as literal text, which is what an unmapped name
-// does here — the failure that made plain Enter type the six letters "Return".
+// Neither key may take the unknown-name path, which is what an unmapped name
+// does here — the failure that made plain Return send its own six letters.
+//
+// The keys are named through direct-key-handler's constants rather than as
+// literals, so this asks the question the regression actually posed: does this
+// encoder have bytes for the key upstream calls KeyReturn, whatever upstream
+// spells it today? Written as "Return" the test would go green again the next
+// time the word moves to another key.
 func TestEnterKeysAreMappedNotTyped(t *testing.T) {
-	for _, k := range []string{"Return", "Enter"} {
-		if got := string(keyToBytes(k)); got == k {
-			t.Errorf("%q encoded to its own name; it is unmapped and would be "+
-				"typed at the guest as text", k)
+	for _, k := range []keyboard.Key{keyboard.KeyReturn, keyboard.KeyKeypadEnter} {
+		name := k.DefaultName()
+		if got := keyToBytes(name); bytes.Equal(got, unknownKeyBytes(name)) {
+			t.Errorf("%v (emits %q) is unmapped: it encodes to %q, the unknown-key "+
+				"form, instead of the bytes a terminal sends for it",
+				k, name, string(got))
 		}
 	}
 }

@@ -164,8 +164,9 @@ func (h *InputHandler) sendToPTY(data []byte) {
 // applyAppCursorKeys rewrites an unmodified cursor key's CSI introducer to SS3
 // (ESC [ x -> ESC O x) for DECCKM application cursor mode.
 func applyAppCursorKeys(key string, b []byte) []byte {
-	switch key {
-	case "Up", "Down", "Left", "Right", "Home", "End":
+	switch keyByName[key] {
+	case keyboard.KeyUp, keyboard.KeyDown, keyboard.KeyLeft, keyboard.KeyRight,
+		keyboard.KeyHome, keyboard.KeyEnd:
 		if len(b) == 3 && b[0] == 0x1b && b[1] == '[' {
 			return []byte{0x1b, 'O', b[2]}
 		}
@@ -176,8 +177,13 @@ func applyAppCursorKeys(key string, b []byte) []byte {
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.
 // Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
-	// Check explicit mappings first
-	if bytes, ok := keyToBytesMap[key]; ok {
+	// Check explicit mappings first. The name is resolved to a Key and the
+	// bytes are looked up under that, so this table is indexed by whatever
+	// direct-key-handler currently calls the key rather than by a word copied
+	// out of it at some point in the past. A key it names but this encoder has
+	// no bytes for falls through to unknownKeyBytes below, same as a name from
+	// nowhere.
+	if bytes, ok := keyBytes[keyByName[key]]; ok {
 		return bytes
 	}
 
@@ -238,12 +244,42 @@ func keyToBytes(key string) []byte {
 		}
 	}
 
-	// Multi-byte UTF-8 characters (len > 1, no modifiers, no hyphens)
-	if len(key) > 1 && key[0] != '^' && !strings.Contains(key, "-") {
+	// A multi-byte key that is a single rune is a typed character — "é", "€",
+	// "日" — and goes out as itself. (Single-BYTE characters were handled
+	// above.) This has to be settled before the bracketing below, or every
+	// non-ASCII keystroke would arrive at the guest wearing angle brackets.
+	if len([]rune(key)) == 1 {
 		return []byte(key)
 	}
 
+	// Anything still here is a name, not a character, and this encoder has no
+	// bytes for it. Send it bracketed rather than bare.
+	//
+	// Bare was the old behavior and it was actively misleading: a name typed as
+	// its own letters is indistinguishable at the guest from the user having
+	// typed those letters, so the two failures this can represent — a key with
+	// no encoding, and a name that stopped matching after an upstream rename —
+	// both surfaced as ordinary-looking text. "<Return>" appearing in a shell
+	// prompt names the key that went unencoded and is greppable; "Return" just
+	// looks like someone typed a word.
+	//
+	// Only the unmodified, non-control shape is bracketed. A modified chord
+	// still returns nil, and nil is not a lesser version of this: it means the
+	// key was NOT consumed, so handleKey reports false and an embedding host
+	// keeps its chance to act on the chord. Bracketing those would quietly
+	// swallow every host binding this encoder happens not to know.
+	if key[0] != '^' && !strings.Contains(key, "-") {
+		return unknownKeyBytes(key)
+	}
+
 	return nil
+}
+
+// unknownKeyBytes is what a key name with no encoding sends: the name in angle
+// brackets. Written once so a test can ask "did this key fall through?"
+// without restating the bracketing and drifting from it.
+func unknownKeyBytes(name string) []byte {
+	return []byte("<" + name + ">")
 }
 
 // parseModifiers extracts modifier flags and base key from a key string.
@@ -293,18 +329,24 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 		return nil
 	}
 
+	// Every comparison below is against a Key rather than a spelling, for the
+	// reason keyBytes is: a name this package invents its own opinion about goes
+	// stale silently the next time the upstream vocabulary moves. A name with no
+	// Key resolves to KeyNone, which matches nothing here and falls through.
+	base := keyByName[baseKey]
+
 	// Arrow keys: ESC [ 1 ; <mod> <A-D>
-	if code, ok := arrowKeyCode[baseKey]; ok {
+	if code, ok := arrowKeyCode[base]; ok {
 		return []byte{0x1b, '[', '1', ';', modChar, code}
 	}
 
 	// Home/End: ESC [ 1 ; <mod> <H|F>
-	if code, ok := homeEndCode[baseKey]; ok {
+	if code, ok := homeEndCode[base]; ok {
 		return []byte{0x1b, '[', '1', ';', modChar, code}
 	}
 
 	// Tab: S-Tab is ESC [ Z, Alt+Tab is ESC + Tab byte
-	if baseKey == "Tab" {
+	if base == keyboard.KeyTab {
 		switch mod {
 		case 2: // Shift
 			return []byte{0x1b, '[', 'Z'}
@@ -325,9 +367,9 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 
 	// The home-row key with modifiers. This branch was written when the name
 	// for it was "Enter"; upstream now calls the home-row key "Return" and
-	// gives "Enter" to the keypad's, so the behavior moves to the name it
-	// always described rather than staying on the word.
-	if baseKey == "Return" {
+	// gives "Enter" to the keypad's. Naming the constant is what makes that
+	// history irrelevant — the branch follows the key, not the word.
+	if base == keyboard.KeyReturn {
 		if mod == 3 { // Alt+Return
 			return []byte{0x1b, 0x0d}
 		}
@@ -338,7 +380,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	// The keypad's Enter with modifiers: its own sequence behind an ESC for
 	// Alt, the same shape as the home-row key above. Sending CR here would put
 	// the two keys back together, which is what the split exists to prevent.
-	if baseKey == "Enter" {
+	if base == keyboard.KeyKeypadEnter {
 		if mod == 3 { // Alt+Enter
 			return []byte{0x1b, 0x1b, 'O', 'M'}
 		}
@@ -349,7 +391,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	// names BS (8) and DEL (127) apart because it cannot tell which one a
 	// terminal will send for its backspace, but both erase behind the cursor,
 	// so both encode the same way going out. (Forward delete is "FDel".)
-	if baseKey == "Backspace" || baseKey == "Delete" {
+	if base == keyboard.KeyBackspace || base == keyboard.KeyDEL {
 		if mod == 3 { // Alt+Backspace
 			return []byte{0x1b, 0x7f}
 		}
@@ -360,7 +402,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	}
 
 	// Escape with modifiers
-	if baseKey == "Escape" {
+	if base == keyboard.KeyEscape {
 		if mod == 3 { // Alt+Escape
 			return []byte{0x1b, 0x1b}
 		}
@@ -368,12 +410,12 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	}
 
 	// F1-F4: ESC [ 1 ; <mod> <P-S>
-	if code, ok := f1f4Code[baseKey]; ok {
+	if code, ok := f1f4Code[base]; ok {
 		return []byte{0x1b, '[', '1', ';', modChar, code}
 	}
 
-	// F5-F12, Insert, Delete, PageUp, PageDown: ESC [ <code> ; <mod> ~
-	if codeStr, ok := tildeKeyCode[baseKey]; ok {
+	// F5-F12, Insert, FDel, PageUp, PageDown: ESC [ <code> ; <mod> ~
+	if codeStr, ok := tildeKeyCode[base]; ok {
 		result := []byte{0x1b, '['}
 		result = append(result, []byte(codeStr)...)
 		result = append(result, ';', modChar, '~')
@@ -381,7 +423,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	}
 
 	// Space with modifiers
-	if baseKey == "Space" {
+	if base == keyboard.KeySpace {
 		if mod == 3 { // Alt+Space
 			return []byte{0x1b, ' '}
 		}
@@ -394,47 +436,57 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	return nil
 }
 
-var arrowKeyCode = map[string]byte{
-	"Up":    'A',
-	"Down":  'B',
-	"Right": 'C',
-	"Left":  'D',
+var arrowKeyCode = map[keyboard.Key]byte{
+	keyboard.KeyUp:    'A',
+	keyboard.KeyDown:  'B',
+	keyboard.KeyRight: 'C',
+	keyboard.KeyLeft:  'D',
 }
 
-var homeEndCode = map[string]byte{
-	"Home": 'H',
-	"End":  'F',
+var homeEndCode = map[keyboard.Key]byte{
+	keyboard.KeyHome: 'H',
+	keyboard.KeyEnd:  'F',
 }
 
-var f1f4Code = map[string]byte{
-	"F1": 'P',
-	"F2": 'Q',
-	"F3": 'R',
-	"F4": 'S',
+var f1f4Code = map[keyboard.Key]byte{
+	keyboard.KeyF1: 'P',
+	keyboard.KeyF2: 'Q',
+	keyboard.KeyF3: 'R',
+	keyboard.KeyF4: 'S',
 }
 
-var tildeKeyCode = map[string]string{
-	"Insert":   "2",
-	"FDel":     "3", // forward delete; the erase-behind keys are handled above
-	"PageUp":   "5",
-	"PageDown": "6",
-	"F5":       "15",
-	"F6":       "17",
-	"F7":       "18",
-	"F8":       "19",
-	"F9":       "20",
-	"F10":      "21",
-	"F11":      "23",
-	"F12":      "24",
+var tildeKeyCode = map[keyboard.Key]string{
+	keyboard.KeyInsert:   "2",
+	keyboard.KeyDelete:   "3", // forward delete; the erase-behind keys are handled above
+	keyboard.KeyPageUp:   "5",
+	keyboard.KeyPageDown: "6",
+	keyboard.KeyF5:       "15",
+	keyboard.KeyF6:       "17",
+	keyboard.KeyF7:       "18",
+	keyboard.KeyF8:       "19",
+	keyboard.KeyF9:       "20",
+	keyboard.KeyF10:      "21",
+	keyboard.KeyF11:      "23",
+	keyboard.KeyF12:      "24",
 }
 
-// keyToBytesMap maps base key names (without modifiers) to their byte sequences.
-// Modified keys are handled dynamically by encodeModifiedKey.
-var keyToBytesMap = map[string][]byte{
+// keyBytes maps a key to the bytes a terminal sends for it with no modifiers
+// held. Modified keys are built by encodeModifiedKey instead.
+//
+// It is keyed by direct-key-handler's CONSTANT, never by the name. The names
+// belong to that package and it may respell them: when the home-row key was
+// renamed from "Enter" to "Return", a table written in words still said
+// "Enter", nothing matched the arriving name, and pressing Return typed its own
+// six letters into the guest — with no error raised anywhere, because an
+// unmatched name is indistinguishable from a key this encoder never knew. A
+// constant cannot drift like that. A respelling upstream changes only the
+// spelling this table is indexed under, and a key withdrawn upstream stops
+// compiling rather than going quiet.
+var keyBytes = map[keyboard.Key][]byte{
 	// Control keys
-	"Tab":    {9},
-	"Escape": {27},
-	"Space":  {32},
+	keyboard.KeyTab:    {9},
+	keyboard.KeyEscape: {27},
+	keyboard.KeySpace:  {32},
 
 	// The two Enter keys, kept apart on the wire.
 	//
@@ -449,8 +501,8 @@ var keyToBytesMap = map[string][]byte{
 	// The keypad is treated as being in application mode always. Numeric mode
 	// would have it send CR, which is the conflation this is avoiding, so the
 	// distinction wins over the mode.
-	"Return": {13},
-	"Enter":  {0x1b, 'O', 'M'},
+	keyboard.KeyReturn:      {13},
+	keyboard.KeyKeypadEnter: {0x1b, 'O', 'M'},
 
 	// The two erase-behind keys. direct-key-handler names BS (8) and DEL (127)
 	// apart on the way IN, because a terminal's backspace sends one or the
@@ -459,37 +511,54 @@ var keyToBytesMap = map[string][]byte{
 	// terminal sends for that is DEL. Emitting BS here instead would be read as
 	// Ctrl-H by any guest that maps input to key events — a browser has no
 	// binding for Ctrl-H, so the keystroke would simply vanish.
-	"Backspace": {127},
-	"Delete":    {127},
+	keyboard.KeyBackspace: {127},
+	keyboard.KeyDEL:       {127},
 
 	// Arrow keys
-	"Up":    {0x1b, '[', 'A'},
-	"Down":  {0x1b, '[', 'B'},
-	"Right": {0x1b, '[', 'C'},
-	"Left":  {0x1b, '[', 'D'},
+	keyboard.KeyUp:    {0x1b, '[', 'A'},
+	keyboard.KeyDown:  {0x1b, '[', 'B'},
+	keyboard.KeyRight: {0x1b, '[', 'C'},
+	keyboard.KeyLeft:  {0x1b, '[', 'D'},
 
 	// Navigation keys
-	"Home":     {0x1b, '[', 'H'},
-	"End":      {0x1b, '[', 'F'},
-	"Insert":   {0x1b, '[', '2', '~'},
-	"FDel":     {0x1b, '[', '3', '~'}, // forward delete
-	"PageUp":   {0x1b, '[', '5', '~'},
-	"PageDown": {0x1b, '[', '6', '~'},
+	keyboard.KeyHome:     {0x1b, '[', 'H'},
+	keyboard.KeyEnd:      {0x1b, '[', 'F'},
+	keyboard.KeyInsert:   {0x1b, '[', '2', '~'},
+	keyboard.KeyDelete:   {0x1b, '[', '3', '~'}, // forward delete, spelled "FDel"
+	keyboard.KeyPageUp:   {0x1b, '[', '5', '~'},
+	keyboard.KeyPageDown: {0x1b, '[', '6', '~'},
 
 	// Function keys (F1-F4 use SS3, F5+ use CSI)
-	"F1":  {0x1b, 'O', 'P'},
-	"F2":  {0x1b, 'O', 'Q'},
-	"F3":  {0x1b, 'O', 'R'},
-	"F4":  {0x1b, 'O', 'S'},
-	"F5":  {0x1b, '[', '1', '5', '~'},
-	"F6":  {0x1b, '[', '1', '7', '~'},
-	"F7":  {0x1b, '[', '1', '8', '~'},
-	"F8":  {0x1b, '[', '1', '9', '~'},
-	"F9":  {0x1b, '[', '2', '0', '~'},
-	"F10": {0x1b, '[', '2', '1', '~'},
-	"F11": {0x1b, '[', '2', '3', '~'},
-	"F12": {0x1b, '[', '2', '4', '~'},
+	keyboard.KeyF1:  {0x1b, 'O', 'P'},
+	keyboard.KeyF2:  {0x1b, 'O', 'Q'},
+	keyboard.KeyF3:  {0x1b, 'O', 'R'},
+	keyboard.KeyF4:  {0x1b, 'O', 'S'},
+	keyboard.KeyF5:  {0x1b, '[', '1', '5', '~'},
+	keyboard.KeyF6:  {0x1b, '[', '1', '7', '~'},
+	keyboard.KeyF7:  {0x1b, '[', '1', '8', '~'},
+	keyboard.KeyF8:  {0x1b, '[', '1', '9', '~'},
+	keyboard.KeyF9:  {0x1b, '[', '2', '0', '~'},
+	keyboard.KeyF10: {0x1b, '[', '2', '1', '~'},
+	keyboard.KeyF11: {0x1b, '[', '2', '3', '~'},
+	keyboard.KeyF12: {0x1b, '[', '2', '4', '~'},
 }
+
+// keyByName turns a base name direct-key-handler emitted back into its Key, so
+// every table and comparison below is written in constants while the lookup
+// still starts from the string that actually arrives.
+//
+// It is built from AllKeys(), which is the point: the list of keys and their
+// spellings comes from one place, at the source. A key added upstream appears
+// here the moment the dependency is bumped, and TestEveryKeyIsAccountedFor then
+// requires this package to say whether it has bytes for it.
+var keyByName = func() map[string]keyboard.Key {
+	all := keyboard.AllKeys()
+	m := make(map[string]keyboard.Key, len(all))
+	for _, k := range all {
+		m[k.DefaultName()] = k
+	}
+	return m
+}()
 
 // handleMouseKey processes mouse key events from direct-key-handler.
 // The library emits mouse events as:
