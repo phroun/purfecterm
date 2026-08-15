@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package purfecterm
 
@@ -6,6 +6,11 @@ package purfecterm
 // object is reachable through the filesystem: Linux and the BSDs surface them
 // under /dev/shm, so the object name maps to a path and an ordinary read works.
 // macOS does not, and has its own file — see kitty_shm_darwin.go.
+//
+// The filename matters here: called kitty_shm_linux.go, Go's implicit
+// filename constraint would have limited it to GOOS=linux whatever the build
+// tag above said, and every other platform would have been left with no
+// implementation at all.
 
 import (
 	"os"

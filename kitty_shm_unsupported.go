@@ -1,11 +1,12 @@
-//go:build darwin && !cgo
+//go:build (darwin && !cgo) || windows
 
 package purfecterm
 
-// Shared-memory transmission (t=s) needs shm_open on macOS, which needs cgo.
-// A pure-Go build there reports the transfer as unavailable rather than
-// silently drawing nothing: the protocol turns this into an ENOENT the client
-// can see and fall back from.
+// Shared-memory transmission (t=s) where it cannot be served: macOS without
+// cgo, which needs shm_open, and Windows, which has no POSIX shared memory to
+// open at all. Both report the transfer as unavailable rather than silently
+// drawing nothing — the protocol turns this into an ENOENT the client can see
+// and fall back from.
 
 import "errors"
 

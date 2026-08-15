@@ -102,7 +102,8 @@ func New(opts Options) (*Terminal, error) {
 		pty := t.pty
 		t.mu.Unlock()
 		if pty != nil {
-			pty.Resize(cols, rows)
+			wPx, hPx := t.ptyPixelSize(cols, rows)
+			pty.ResizeWithPixels(cols, rows, wPx, hPx)
 		}
 	})
 
@@ -189,7 +190,8 @@ func (t *Terminal) RunCommand(name string, args ...string) error {
 	// Set initial size to actual widget size (not original options)
 	// This is important because the widget may have been resized after creation
 	cols, rows := t.widget.GetSize()
-	pty.Resize(cols, rows)
+	wPx, hPx := t.ptyPixelSize(cols, rows)
+	pty.ResizeWithPixels(cols, rows, wPx, hPx)
 	if t.resizeCallback != nil {
 		t.resizeCallback(cols, rows)
 	}
@@ -262,7 +264,8 @@ func (t *Terminal) Resize(cols, rows int) {
 	pty := t.pty
 	t.mu.Unlock()
 	if pty != nil {
-		pty.Resize(cols, rows)
+		wPx, hPx := t.ptyPixelSize(cols, rows)
+		pty.ResizeWithPixels(cols, rows, wPx, hPx)
 		if t.resizeCallback != nil {
 			t.resizeCallback(cols, rows)
 		}
@@ -425,4 +428,16 @@ func (t *Terminal) Buffer() *purfecterm.Buffer {
 // SetColorScheme sets the terminal color scheme
 func (t *Terminal) SetColorScheme(scheme purfecterm.ColorScheme) {
 	t.widget.SetColorScheme(scheme)
+}
+
+// ptyPixelSize returns the window's size in device pixels for a given cell
+// grid, from the cell size the widget reports to the emulator. A graphical
+// client reads these from the tty rather than asking the terminal, so leaving
+// them at zero gives it a zero-sized viewport and it draws nothing.
+func (t *Terminal) ptyPixelSize(cols, rows int) (int, int) {
+	cw, ch := t.widget.Buffer().GetCellPixelSize()
+	if cw <= 0 || ch <= 0 {
+		return 0, 0
+	}
+	return cols * cw, rows * ch
 }

@@ -19,11 +19,11 @@ import (
 type BorderStyle int
 
 const (
-	BorderNone   BorderStyle = iota // No border
-	BorderSingle                    // Single-line box drawing characters
-	BorderDouble                    // Double-line box drawing characters
-	BorderHeavy                     // Heavy/thick box drawing characters
-	BorderRounded                   // Rounded corners (single line)
+	BorderNone    BorderStyle = iota // No border
+	BorderSingle                     // Single-line box drawing characters
+	BorderDouble                     // Double-line box drawing characters
+	BorderHeavy                      // Heavy/thick box drawing characters
+	BorderRounded                    // Rounded corners (single line)
 )
 
 // Rect represents a rectangle for clipping
@@ -93,10 +93,10 @@ type Options struct {
 	WorkingDir     string                 // Initial working directory (default: current dir)
 
 	// Display options
-	BorderStyle   BorderStyle // Border style around the terminal window
-	Title         string      // Window title (displayed in top border if applicable)
-	OffsetX       int         // X offset from top-left of actual terminal (0 = left edge)
-	OffsetY       int         // Y offset from top-left of actual terminal (0 = top edge)
+	BorderStyle BorderStyle // Border style around the terminal window
+	Title       string      // Window title (displayed in top border if applicable)
+	OffsetX     int         // X offset from top-left of actual terminal (0 = left edge)
+	OffsetY     int         // Y offset from top-left of actual terminal (0 = top edge)
 
 	// If true, the terminal window auto-sizes to fill available space
 	AutoSize bool
@@ -162,9 +162,9 @@ type Terminal struct {
 	hostRows int
 
 	// Focus state for embedded mode
-	focused  bool
-	onFocus  func(bool) // Called when focus state changes
-	onBell   func()     // Called when bell is triggered (for parent TUI notification)
+	focused bool
+	onFocus func(bool) // Called when focus state changes
+	onBell  func()     // Called when bell is triggered (for parent TUI notification)
 
 	// Clipping for partial visibility (e.g., scrollable containers)
 	clipRect    Rect // Visible area in screen coordinates (zero = no clipping)
@@ -511,7 +511,12 @@ func (t *Terminal) Resize(cols, rows int) {
 	t.options.Rows = rows
 
 	if t.pty != nil {
-		t.pty.Resize(cols, rows)
+		// Carry the window's PIXEL size through as well when the cell size is
+		// known. A graphical client reads it from the tty rather than asking
+		// the terminal, and a zero there is not "unknown" to such a client —
+		// it is a zero-sized viewport, and it draws nothing.
+		cw, ch := t.buffer.GetCellPixelSize()
+		t.pty.ResizeWithPixels(cols, rows, cols*cw, rows*ch)
 	}
 
 	// Force full redraw

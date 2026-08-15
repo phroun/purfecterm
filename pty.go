@@ -16,6 +16,12 @@ type PTY interface {
 	// Resize resizes the PTY
 	Resize(cols, rows int) error
 
+	// ResizeWithPixels resizes the PTY and reports the window's size in
+	// PIXELS as well as in cells. A program that draws pictures rather than
+	// characters sizes its output from these; left at zero it computes a
+	// zero-sized viewport and renders nothing.
+	ResizeWithPixels(cols, rows, widthPx, heightPx int) error
+
 	// Close closes the PTY
 	Close() error
 }

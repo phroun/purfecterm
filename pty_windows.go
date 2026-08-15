@@ -146,6 +146,14 @@ func (p *ConPTY) Write(b []byte) (int, error) {
 	return p.pipeIn.Write(b)
 }
 
+// ResizeWithPixels resizes the PTY. A Windows pseudo-console carries no pixel
+// dimensions — ResizePseudoConsole takes a character COORD and there is no
+// winsize equivalent to put them in — so the pixel size is accepted and
+// dropped rather than pretended about.
+func (p *ConPTY) ResizeWithPixels(cols, rows, widthPx, heightPx int) error {
+	return p.Resize(cols, rows)
+}
+
 // Resize resizes the PTY
 func (p *ConPTY) Resize(cols, rows int) error {
 	p.mu.Lock()
