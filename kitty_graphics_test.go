@@ -637,23 +637,32 @@ func TestKittyAnimationFrameSwitching(t *testing.T) {
 		t.Fatalf("root frame is not red")
 	}
 
-	// Frame 2: all green, transmitted but NOT yet shown.
+	// Frame 2: all green. A client transmitting a frame is transmitting it to
+	// be SEEN, and with no playback clock the newest frame is what a finished
+	// loop would have settled on — so it becomes visible without being asked
+	// for. Holding the root instead is the one indefensible choice: a
+	// browser's root frame is whatever it had before it had drawn anything.
 	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
-	if _, g, _, _ := b.GetImages()[0].Image.At(0, 0); g == 255 {
-		t.Error("transmitting a frame changed the display; only a=a may do that")
-	}
-
-	// Make frame 2 current: every placement of the image follows.
-	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
 	r, g, _, _ := b.GetImages()[0].Image.At(0, 0)
 	if g != 255 || r != 0 {
-		t.Errorf("after selecting frame 2 the pixel is (%d,%d,..), want green", r, g)
+		t.Errorf("after transmitting frame 2 the pixel is (%d,%d,..), want green", r, g)
 	}
 
-	// And back to the root frame.
+	// An explicit selection is the client taking over, and it sticks.
 	p.Parse([]byte("\x1b_Ga=a,i=1,r=1\x1b\\"))
 	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
 		t.Error("selecting frame 1 did not return to the root image")
+	}
+	// Having chosen, the client keeps the choice: a later frame must not
+	// silently steal the display back.
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,r=3", rgbaPayload(2, 2, 0, 0, 255, 255)))
+	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
+		t.Error("a frame transmitted after an explicit selection took the display")
+	}
+	// And the client can still move on when it wants to.
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=3\x1b\\"))
+	if _, _, bl, _ := b.GetImages()[0].Image.At(0, 0); bl != 255 {
+		t.Error("selecting frame 3 did not show it")
 	}
 }
 

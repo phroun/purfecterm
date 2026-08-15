@@ -123,6 +123,11 @@ func (p *Parser) transmitKittyFrame(cmd kittyCmd, data []byte) {
 		}
 		img.frames = append(img.frames, frame)
 	}
+	written := cmd.rows
+	if written <= 0 {
+		written = len(img.frames)
+	}
+	p.buffer.showNewestFrame(img, written)
 	p.buffer.mu.Unlock()
 
 	p.respondKitty(cmd, img.id, cmd.imageNumber, "OK")
@@ -142,6 +147,7 @@ func (p *Parser) controlKittyAnimation(cmd kittyCmd) {
 	img.ensureRootFrame()
 	if cmd.rows > 0 && img.frameAt(cmd.rows) != nil {
 		img.current = cmd.rows
+		img.pinned = true // the client is choosing; stop choosing for it
 	}
 	if cmd.width > 0 { // s=: 1 stop, 2 run-and-wait, 3 run
 		img.running = cmd.width >= 2
@@ -293,7 +299,9 @@ func (p *Parser) composeKittyFrames(cmd kittyCmd) {
 		w, h, cmd.noCursorMove) // C=1: overwrite rather than blend
 	dst.bitmap = edited
 
-	// A placement showing this frame shows the edit.
+	// The edited frame becomes the one on show, so a composed damage region
+	// reaches the screen rather than sitting in a frame nothing displays.
+	p.buffer.showNewestFrame(img, cmd.rows)
 	if img.current == cmd.rows {
 		for _, im := range p.buffer.images {
 			if im.ImageID == img.id {
@@ -342,4 +350,28 @@ func copyBitmapRect(dst, src *Bitmap, sx, sy, dx, dy, w, h int, replace bool) {
 			dst.RGBA[di+3] = byte(sa + da*(255-sa)/255)
 		}
 	}
+}
+
+// showNewestFrame makes the frame just written the visible one, unless the
+// client has pinned a frame itself with a=a r=.
+//
+// A terminal that cannot run a playback clock still has to decide WHICH frame a
+// placement shows. Holding the root is the one indefensible choice: a client
+// that transmits frames is transmitting them to be seen, and a browser's root
+// frame is whatever its renderer had before it had drawn anything — blank. So
+// the newest frame wins by default, which is also what a real playback would
+// settle on once a finite loop finished. A client that selects frames
+// explicitly keeps that choice. Caller holds the lock.
+func (b *Buffer) showNewestFrame(img *kittyImage, frame int) {
+	if img.pinned || frame < 1 || frame > len(img.frames) {
+		return
+	}
+	img.current = frame
+	shown := img.currentBitmap()
+	for _, im := range b.images {
+		if im.ImageID == img.id {
+			im.Image = shown
+		}
+	}
+	b.markDirty()
 }

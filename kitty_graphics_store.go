@@ -18,6 +18,9 @@ type kittyImage struct {
 	// 1-based frame a placement of this image shows.
 	frames  []*kittyFrame
 	current int
+	// pinned records that the CLIENT chose the current frame with a=a r=.
+	// Until it does, the newest frame is the one shown — see showNewestFrame.
+	pinned  bool
 	gapMS   int
 	loops   int
 	running bool
