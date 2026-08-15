@@ -1,7 +1,5 @@
 package purfecterm
 
-import "os"
-
 // Animation for the kitty graphics protocol: a=f transmits frame data, a=a
 // controls playback.
 //
@@ -125,11 +123,10 @@ func (p *Parser) transmitKittyFrame(cmd kittyCmd, data []byte) {
 		}
 		img.frames = append(img.frames, frame)
 	}
-	written := cmd.rows
-	if written <= 0 {
-		written = len(img.frames)
-	}
-	p.buffer.showNewestFrame(img, written)
+	// Transmitting a frame does NOT change what is on screen. Making it do so
+	// was a workaround for the compose direction being wrong: it put the
+	// staged damage on screen for one paint before the bad copy wiped it,
+	// which is precisely the flicker that gave the real bug away.
 	p.buffer.mu.Unlock()
 
 	p.respondKitty(cmd, img.id, cmd.imageNumber, "OK")
@@ -149,7 +146,6 @@ func (p *Parser) controlKittyAnimation(cmd kittyCmd) {
 	img.ensureRootFrame()
 	if cmd.rows > 0 && img.frameAt(cmd.rows) != nil {
 		img.current = cmd.rows
-		img.pinned = true // the client is choosing; stop choosing for it
 	}
 	if cmd.width > 0 { // s=: 1 stop, 2 run-and-wait, 3 run
 		img.running = cmd.width >= 2
@@ -277,24 +273,21 @@ func (p *Parser) composeKittyFrames(cmd kittyCmd) {
 
 	p.buffer.mu.Lock()
 	img.ensureRootFrame()
-	dst := img.frameAt(cmd.rows) // r= the frame being edited
-	src := img.frameAt(cmd.cols) // c= the frame supplying the pixels
+	// r NAMES THE SOURCE and c the destination, which is the opposite of what
+	// the specification's key table says and what this originally did. The
+	// traffic settles it: a client stages a damage region in a frame with a=f,
+	// then composes THAT into the picture at the offset the region belongs at.
+	// Read the other way the picture is copied over the damage instead, which
+	// showed up as the content appearing for exactly one paint and then being
+	// wiped back to the blank root — everything except the top strip, which is
+	// the only part no copy covered.
+	srcFrame, dstFrame := cmd.rows, cmd.cols
+	src := img.frameAt(srcFrame)
+	dst := img.frameAt(dstFrame)
 	if dst == nil || src == nil {
 		p.buffer.mu.Unlock()
 		p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such frame")
 		return
-	}
-
-	// Which frame supplies the pixels and which receives them is the one thing
-	// in this protocol the documentation states two ways: its key table calls
-	// r "the frame being edited" and c "the frame whose data is overlaid",
-	// while its own summary of x/y and X/Y reverses source and destination.
-	// The reading below follows the key table. PURFECTERM_KITTY_COMPOSE_SWAP
-	// takes the other one, so the question can be settled by observation
-	// rather than by re-reading the sentence; this switch goes away once it is.
-	if os.Getenv("PURFECTERM_KITTY_COMPOSE_SWAP") == "1" {
-		dst, src = src, dst
-		logGraphics("  -- compose swapped: frame %d <- frame %d", cmd.cols, cmd.rows)
 	}
 
 	w, h := cmd.srcW, cmd.srcH
@@ -313,10 +306,8 @@ func (p *Parser) composeKittyFrames(cmd kittyCmd) {
 		w, h, cmd.noCursorMove) // C=1: overwrite rather than blend
 	dst.bitmap = edited
 
-	// The edited frame becomes the one on show, so a composed damage region
-	// reaches the screen rather than sitting in a frame nothing displays.
-	p.buffer.showNewestFrame(img, cmd.rows)
-	if img.current == cmd.rows {
+	// A placement showing the frame that was just edited shows the edit.
+	if img.current == dstFrame {
 		for _, im := range p.buffer.images {
 			if im.ImageID == img.id {
 				im.Image = edited
@@ -364,28 +355,4 @@ func copyBitmapRect(dst, src *Bitmap, sx, sy, dx, dy, w, h int, replace bool) {
 			dst.RGBA[di+3] = byte(sa + da*(255-sa)/255)
 		}
 	}
-}
-
-// showNewestFrame makes the frame just written the visible one, unless the
-// client has pinned a frame itself with a=a r=.
-//
-// A terminal that cannot run a playback clock still has to decide WHICH frame a
-// placement shows. Holding the root is the one indefensible choice: a client
-// that transmits frames is transmitting them to be seen, and a browser's root
-// frame is whatever its renderer had before it had drawn anything — blank. So
-// the newest frame wins by default, which is also what a real playback would
-// settle on once a finite loop finished. A client that selects frames
-// explicitly keeps that choice. Caller holds the lock.
-func (b *Buffer) showNewestFrame(img *kittyImage, frame int) {
-	if img.pinned || frame < 1 || frame > len(img.frames) {
-		return
-	}
-	img.current = frame
-	shown := img.currentBitmap()
-	for _, im := range b.images {
-		if im.ImageID == img.id {
-			im.Image = shown
-		}
-	}
-	b.markDirty()
 }

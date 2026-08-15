@@ -637,32 +637,25 @@ func TestKittyAnimationFrameSwitching(t *testing.T) {
 		t.Fatalf("root frame is not red")
 	}
 
-	// Frame 2: all green. A client transmitting a frame is transmitting it to
-	// be SEEN, and with no playback clock the newest frame is what a finished
-	// loop would have settled on — so it becomes visible without being asked
-	// for. Holding the root instead is the one indefensible choice: a
-	// browser's root frame is whatever it had before it had drawn anything.
+	// Frame 2: all green, staged. Transmitting does not change what is shown —
+	// a client stages frames and then either composes them into the picture or
+	// selects one.
 	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
-	r, g, _, _ := b.GetImages()[0].Image.At(0, 0)
-	if g != 255 || r != 0 {
-		t.Errorf("after transmitting frame 2 the pixel is (%d,%d,..), want green", r, g)
+	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
+		t.Error("a staged frame reached the screen before it was asked for")
 	}
 
-	// An explicit selection is the client taking over, and it sticks.
+	// Selecting it shows it, and every placement of the image follows.
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+	r, g, _, _ := b.GetImages()[0].Image.At(0, 0)
+	if g != 255 || r != 0 {
+		t.Errorf("after selecting frame 2 the pixel is (%d,%d,..), want green", r, g)
+	}
+
+	// And back to the root frame.
 	p.Parse([]byte("\x1b_Ga=a,i=1,r=1\x1b\\"))
 	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
 		t.Error("selecting frame 1 did not return to the root image")
-	}
-	// Having chosen, the client keeps the choice: a later frame must not
-	// silently steal the display back.
-	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,r=3", rgbaPayload(2, 2, 0, 0, 255, 255)))
-	if r, _, _, _ := b.GetImages()[0].Image.At(0, 0); r != 255 {
-		t.Error("a frame transmitted after an explicit selection took the display")
-	}
-	// And the client can still move on when it wants to.
-	p.Parse([]byte("\x1b_Ga=a,i=1,r=3\x1b\\"))
-	if _, _, bl, _ := b.GetImages()[0].Image.At(0, 0); bl != 255 {
-		t.Error("selecting frame 3 did not show it")
 	}
 }
 
@@ -752,48 +745,63 @@ func TestKittyAnimationProbeIsAccepted(t *testing.T) {
 	}
 }
 
-// a=c copies a rectangle from one frame onto another. This is how a client
-// updates only what changed — keep the previous frame, overlay the damaged
-// region — which makes it as load-bearing as frame transfer for anything
-// streaming a moving picture.
+// a=c copies a rectangle from the frame named by r INTO the frame named by c.
+// That is the opposite of what the specification's key table says, and the
+// traffic is what settles it: a client stages a damage region with a=f and then
+// composes it into the picture at the offset it belongs at. Read the other way
+// the picture is copied over the damage, which on screen was the content
+// appearing for one paint and then being wiped.
 func TestKittyComposeFrames(t *testing.T) {
 	b, p, _ := newKittyTestBuffer()
-	// Frame 1: 4x4 red. Frame 2: 4x4 blue.
+	// Frame 1 (the picture): 4x4 red. Frame 2 (staged damage): 4x4 blue.
 	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", rgbaPayload(4, 4, 255, 0, 0, 255)))
-	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,X=1", rgbaPayload(4, 4, 0, 0, 255, 255)))
+	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,r=2,X=1", rgbaPayload(4, 4, 0, 0, 255, 255)))
 
-	// Copy a 2x2 rectangle from frame 1's origin onto frame 2 at (2,2).
-	// x,y are the DESTINATION edge; X,Y the source edge.
+	// Copy a 2x2 region from frame 2 into the picture at (2,2).
 	p.Parse([]byte("\x1b_Ga=c,i=1,r=2,c=1,x=2,y=2,X=0,Y=0,w=2,h=2,C=1\x1b\\"))
-	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
 
+	// The placement shows frame 1, which now carries the damage.
 	img := b.GetImages()[0].Image
-	if r, _, _, _ := img.At(3, 3); r != 255 {
-		t.Errorf("the composed rectangle did not land at the destination edge")
+	if _, _, bl, _ := img.At(3, 3); bl != 255 {
+		t.Errorf("the damage did not reach the picture at its destination")
 	}
-	if _, _, bl, _ := img.At(0, 0); bl != 255 {
-		t.Errorf("frame 2's own pixels were lost outside the composed rectangle")
+	if r, _, _, _ := img.At(0, 0); r != 255 {
+		t.Errorf("the picture was overwritten outside the composed region")
 	}
 }
 
-// The source edge is X,Y — distinct from the destination x,y, and easy to
-// transpose since the same letters mean other things elsewhere in the protocol.
+// Transmitting a frame does not change what is on screen; only composing into
+// the displayed frame, or selecting one with a=a, does.
+func TestKittyTransmittingAFrameDoesNotChangeTheDisplay(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1", rgbaPayload(2, 2, 255, 0, 0, 255)))
+	p.Parse(kittySeq("a=f,f=32,s=2,v=2,i=1,r=2,X=1", rgbaPayload(2, 2, 0, 255, 0, 255)))
+
+	if _, g, _, _ := b.GetImages()[0].Image.At(0, 0); g == 255 {
+		t.Error("a staged frame reached the screen before it was composed")
+	}
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+	if _, g, _, _ := b.GetImages()[0].Image.At(0, 0); g != 255 {
+		t.Error("selecting the frame did not show it")
+	}
+}
+
+// The destination offset is x,y and the source offset X,Y — distinct, and easy
+// to transpose since the same letters mean other things elsewhere.
 func TestKittyComposeSourceAndDestinationEdgesAreDistinct(t *testing.T) {
 	b, p, _ := newKittyTestBuffer()
-	// Frame 1: 4x4 red with a single green pixel at (3,3).
-	base := rgbaPayload(4, 4, 255, 0, 0, 255)
+	// Staged frame with a single green pixel at (3,3), everything else clear.
+	patch := make([]byte, 4*4*4)
 	i := (3*4 + 3) * 4
-	base[i], base[i+1], base[i+2] = 0, 255, 0
-	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", base))
-	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,X=1", rgbaPayload(4, 4, 0, 0, 255, 255)))
+	patch[i+1], patch[i+3] = 255, 255
+	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", rgbaPayload(4, 4, 255, 0, 0, 255)))
+	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,r=2,X=1", patch))
 
-	// Take the 1x1 SOURCE rect at (3,3) — the green pixel — to DESTINATION (0,0).
+	// Take the 1x1 SOURCE rect at (3,3) to DESTINATION (0,0) of the picture.
 	p.Parse([]byte("\x1b_Ga=c,i=1,r=2,c=1,X=3,Y=3,x=0,y=0,w=1,h=1,C=1\x1b\\"))
-	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
 
-	img := b.GetImages()[0].Image
-	if _, g, _, _ := img.At(0, 0); g != 255 {
-		r, g2, bl, _ := img.At(0, 0)
+	if _, g, _, _ := b.GetImages()[0].Image.At(0, 0); g != 255 {
+		r, g2, bl, _ := b.GetImages()[0].Image.At(0, 0)
 		t.Errorf("destination (0,0) = (%d,%d,%d), want the green source pixel — "+
 			"x/y and X/Y are transposed", r, g2, bl)
 	}
