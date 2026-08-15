@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // MaxKittyPayloadBytes caps one assembled image payload. Chunked transmission
@@ -299,8 +301,8 @@ func (p *Parser) finishKittyTransfer(cmd kittyCmd, data []byte) {
 	img := &kittyImage{id: id, number: cmd.imageNumber, bitmap: bm}
 	p.buffer.putKittyImage(img)
 
-	if cmd.action == 'T' {
-		p.placeKittyImage(cmd, img)
+	if cmd.action == 'T' && !p.placeKittyImage(cmd, img) {
+		return // the refusal has been answered; the image is still stored
 	}
 	p.respondKitty(cmd, id, cmd.imageNumber, "OK")
 }
@@ -371,16 +373,22 @@ func inflateZlib(data []byte) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(zr, MaxKittyPayloadBytes))
 }
 
-// placeKittyImage creates a placement from a transmit-and-display command.
-func (p *Parser) placeKittyImage(cmd kittyCmd, img *kittyImage) {
+// placeKittyImage creates a placement from a transmit-and-display command,
+// reporting whether one was made. A refusal has already been answered.
+func (p *Parser) placeKittyImage(cmd kittyCmd, img *kittyImage) bool {
 	pi := p.buildKittyPlacement(cmd, img)
 	if pi == nil {
-		return
+		return false
 	}
 	p.buffer.PlaceKittyImage(pi)
-	if !cmd.noCursorMove && !pi.Virtual {
+	// Neither kind of unanchored placement touches the cursor: a virtual one is
+	// not on screen at all until placeholder cells put it there, and a relative
+	// one sits where its parent is, which has nothing to do with where the text
+	// cursor happens to be.
+	if !cmd.noCursorMove && !pi.Virtual && pi.ParentImageID == 0 {
 		p.buffer.advanceCursorForImage(pi.CellsWide, pi.CellsHigh)
 	}
+	return true
 }
 
 // placeStoredKittyImage handles a=p, placing an already-transmitted image.
@@ -398,7 +406,9 @@ func (p *Parser) placeStoredKittyImage(cmd kittyCmd) {
 		p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such image")
 		return
 	}
-	p.placeKittyImage(cmd, img)
+	if !p.placeKittyImage(cmd, img) {
+		return // the refusal has been answered
+	}
 	p.respondKitty(cmd, img.id, cmd.imageNumber, "OK")
 }
 
@@ -455,7 +465,20 @@ func (p *Parser) buildKittyPlacement(cmd kittyCmd, img *kittyImage) *PlacedImage
 		cellsH = cmd.rows
 	}
 
+	// A relative placement (P=) is anchored to another placement, not to the
+	// cursor. The position recorded here is where that resolves to right now,
+	// so deletion by cell position has something to test; the draw list
+	// re-resolves it each frame against wherever the parent has since moved.
 	row, col := p.buffer.CursorRowCol()
+	if cmd.parentImage != 0 {
+		prow, pcol, ok := p.buffer.PlacementPosition(cmd.parentImage, cmd.parentPlacement)
+		if !ok {
+			p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such parent placement")
+			return nil
+		}
+		row, col = prow+cmd.relV, pcol+cmd.relH
+	}
+
 	return &PlacedImage{
 		Row: row, Col: col,
 		CellsWide: cellsW, CellsHigh: cellsH,
@@ -466,6 +489,10 @@ func (p *Parser) buildKittyPlacement(cmd kittyCmd, img *kittyImage) *PlacedImage
 		Virtual:     cmd.virtual,
 		SrcX:        cmd.srcX, SrcY: cmd.srcY, SrcW: srcW, SrcH: srcH,
 		DestW: destW, DestH: destH,
+		ParentImageID:     cmd.parentImage,
+		ParentPlacementID: cmd.parentPlacement,
+		OffsetH:           cmd.relH,
+		OffsetV:           cmd.relV,
 	}
 }
 
@@ -508,6 +535,13 @@ func (p *Parser) respondKittyError(cmd kittyCmd, id uint32, code, detail string)
 
 // readKittyExternal loads a payload from a file, temp file or shared memory
 // object. The path arrives base64-encoded in the payload.
+//
+// These media hand the terminal a NAME and ask it to read whatever is there.
+// That is not a privilege escalation on its own — the program sending the
+// escape code is already running as the user, and the bytes only ever become
+// pixels on the user's own screen, never a reply — but the pty may be the far
+// end of an ssh session or a container, so the read is treated as untrusted
+// input: see readKittyFile for what it will and will not open.
 func readKittyExternal(cmd kittyCmd, name string) ([]byte, string) {
 	if name == "" {
 		return nil, "EINVAL"
@@ -518,7 +552,7 @@ func readKittyExternal(cmd kittyCmd, name string) ([]byte, string) {
 	case 's':
 		data, err = readSharedMemory(name)
 	default:
-		data, err = os.ReadFile(name)
+		data, err = readKittyFile(name)
 	}
 	if err != nil {
 		logGraphics("  -> t=%c read of %q failed: %v", cmd.medium, name, err)
@@ -539,27 +573,85 @@ func readKittyExternal(cmd kittyCmd, name string) ([]byte, string) {
 	}
 	if cmd.medium == 't' {
 		// A temp file is the terminal's to consume: the protocol has the
-		// terminal delete it after reading. Only paths that look like temp
-		// files are removed, so a mislabelled t= cannot delete anything else.
+		// terminal delete it after reading. Only paths that really resolve
+		// inside a temp directory are removed, so a mislabelled t= cannot
+		// delete anything else.
 		if isTempPath(name) {
 			_ = os.Remove(name)
+		} else {
+			logGraphics("  -> t=t kept %q: not inside a temp directory", name)
 		}
 	}
 	return data, ""
 }
 
+// readKittyFile reads a t=f/t=t payload. It is deliberately not os.ReadFile:
+// the name comes off the pty, so it may point at something that is not an
+// image and not even a file.
+//
+//   - Only a REGULAR file is read. A FIFO or a character device (/dev/zero,
+//     /dev/random) never reaches EOF, so reading one would hang the terminal or
+//     grow until it died — and neither can hold an image anyway.
+//   - The check comes BEFORE the open, and the open is non-blocking, because
+//     opening a FIFO for reading blocks until someone writes to it: a guard
+//     that opens first and inspects afterwards has already hung. The open is
+//     re-checked against the descriptor so that swapping the file between the
+//     two steps cannot slip a device through.
+//   - The read is bounded by the file's own size as well as by the payload cap,
+//     so a huge file costs one stat rather than 64 MiB of allocation.
+func readKittyFile(path string) ([]byte, error) {
+	if st, err := os.Stat(path); err != nil {
+		return nil, err
+	} else if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("purfecterm: %s is not a regular file", path)
+	}
+
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("purfecterm: %s is not a regular file", path)
+	}
+	// One over the cap, so a file at exactly the limit still reads whole while
+	// the caller's own check can still see that a larger one overran.
+	limit := int64(MaxKittyPayloadBytes) + 1
+	if st.Size() < limit {
+		limit = st.Size()
+	}
+	return io.ReadAll(io.LimitReader(f, limit))
+}
+
 // isTempPath reports whether a path lies in a temporary directory, guarding the
 // t=t deletion so a client cannot name an arbitrary file and have it removed.
+//
+// The comparison is made on the FULLY RESOLVED path, not on the string as it
+// arrived. A plain prefix test on the raw name accepts "/tmp/../etc/passwd",
+// and accepts "/tmp/link/x" where the client has made /tmp/link a symlink to
+// somewhere else — either of which turns an image transmission into an
+// arbitrary unlink. Resolving both sides also keeps the check working where a
+// temp directory is itself a symlink, as /tmp is on macOS.
 func isTempPath(name string) bool {
-	clean := strings.TrimSpace(name)
+	real, err := filepath.EvalSymlinks(strings.TrimSpace(name))
+	if err != nil {
+		return false
+	}
 	for _, dir := range []string{os.TempDir(), "/tmp", "/var/tmp", "/dev/shm"} {
 		if dir == "" {
 			continue
 		}
-		if !strings.HasSuffix(dir, "/") {
-			dir += "/"
+		root, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
 		}
-		if strings.HasPrefix(clean, dir) {
+		if rel, err := filepath.Rel(root, real); err == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
 		}
 	}

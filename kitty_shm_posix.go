@@ -27,7 +27,7 @@ func readSharedMemory(name string) ([]byte, error) {
 		return nil, os.ErrInvalid
 	}
 	path := "/dev/shm" + clean
-	data, err := os.ReadFile(path)
+	data, err := readKittyFile(path)
 	if err != nil {
 		return nil, err
 	}

@@ -1759,6 +1759,15 @@ func (w *Widget) paintEvent(event *qt.QPaintEvent) {
 			// GetVisibleCell takes screen position and applies horizOffset internally
 			cell := w.buffer.GetVisibleCell(x, y)
 
+			// A kitty Unicode placeholder reserves the cell for a virtual image
+			// placement; the image is drawn into it from the resolved draw list
+			// (Buffer.GetImagesByZ). The cell itself must not also paint a
+			// character: U+10EEEE is private-use, so whatever a font has there
+			// would land on top of the image the cell exists to position.
+			if purfecterm.IsKittyPlaceholderCell(cell) {
+				cell.Char, cell.Combining = ' ', ""
+			}
+
 			// Calculate this cell's visual width
 			// Standard-mode cells carry real widths too, so key on CellWidth
 			// regardless of the FlexWidth flag.
