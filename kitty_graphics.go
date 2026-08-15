@@ -180,6 +180,9 @@ type kittyTransfer struct {
 func (p *Parser) executeKittyGraphics(body string) {
 	control, payload, _ := strings.Cut(body, ";")
 	cmd := parseKittyCmd(control, payload)
+	if GraphicsLoggingEnabled() {
+		logGraphics("APC _G %s  (payload %d bytes)", control, len(payload))
+	}
 
 	// A continuation chunk carries only m= (and q=), except for an animation
 	// frame, which repeats a=f on every chunk. Keying on m= rather than on the
@@ -488,6 +491,9 @@ func (p *Parser) respondKitty(cmd kittyCmd, id, number uint32, status string) {
 
 // respondKittyError reports a failure. q=2 suppresses even these.
 func (p *Parser) respondKittyError(cmd kittyCmd, id uint32, code, detail string) {
+	// Logged before the quiet check: q=2 silences the client's copy of this,
+	// which is exactly when a diagnostic is worth having.
+	logGraphics("  -> ERROR i=%d %s: %s", id, code, detail)
 	if p.responseSink == nil || cmd.quiet >= 2 {
 		return
 	}
@@ -509,8 +515,10 @@ func readKittyExternal(cmd kittyCmd, name string) ([]byte, string) {
 		data, err = os.ReadFile(name)
 	}
 	if err != nil {
+		logGraphics("  -> t=%c read of %q failed: %v", cmd.medium, name, err)
 		return nil, "ENOENT"
 	}
+	logGraphics("  -> t=%c read of %q gave %d bytes", cmd.medium, name, len(data))
 	if cmd.dataOffset > 0 {
 		if cmd.dataOffset >= len(data) {
 			return nil, "EINVAL"

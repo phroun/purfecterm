@@ -16,6 +16,7 @@ package purfecterm
 // Both are ordinary C on the other side of this boundary.
 
 /*
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
@@ -25,15 +26,24 @@ package purfecterm
 
 // purfecterm_shm_read maps a POSIX shared memory object, copies it to a
 // malloc'd buffer the caller frees, and unlinks the object — the protocol has
-// the terminal consume it. Returns NULL on any failure, with *out_size set only
-// on success.
-static void *purfecterm_shm_read(const char *name, size_t max, size_t *out_size) {
+// the terminal consume it. Returns NULL on any failure, reporting WHICH step
+// failed in *stage and its errno in *err, so a diagnostic can say why rather
+// than flattening every cause into "not found".
+//   stage 1 shm_open   2 fstat/size   3 mmap   4 malloc
+static void *purfecterm_shm_read(const char *name, size_t max, size_t *out_size,
+                                 int *stage, int *err) {
+    *stage = 0;
+    *err = 0;
     int fd = shm_open(name, O_RDONLY);
     if (fd < 0) {
+        *stage = 1;
+        *err = errno;
         return NULL;
     }
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_size <= 0 || (size_t)st.st_size > max) {
+        *stage = 2;
+        *err = errno;
         close(fd);
         return NULL;
     }
@@ -41,6 +51,8 @@ static void *purfecterm_shm_read(const char *name, size_t max, size_t *out_size)
     void *addr = mmap(NULL, n, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
     if (addr == MAP_FAILED) {
+        *stage = 3;
+        *err = errno;
         return NULL;
     }
     void *buf = malloc(n);
@@ -49,6 +61,7 @@ static void *purfecterm_shm_read(const char *name, size_t max, size_t *out_size)
     }
     munmap(addr, n);
     if (buf == NULL) {
+        *stage = 4;
         return NULL;
     }
     *out_size = n;
@@ -62,6 +75,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"unsafe"
 )
 
@@ -79,9 +93,15 @@ func readSharedMemory(name string) ([]byte, error) {
 	defer C.free(unsafe.Pointer(cname))
 
 	var size C.size_t
-	buf := C.purfecterm_shm_read(cname, C.size_t(MaxKittyPayloadBytes), &size)
+	var stage, errno C.int
+	buf := C.purfecterm_shm_read(cname, C.size_t(MaxKittyPayloadBytes), &size, &stage, &errno)
 	if buf == nil {
-		return nil, fmt.Errorf("purfecterm: cannot read shared memory object %s", clean)
+		step := map[C.int]string{1: "shm_open", 2: "fstat/size", 3: "mmap", 4: "malloc"}[stage]
+		if step == "" {
+			step = "unknown step"
+		}
+		return nil, fmt.Errorf("purfecterm: shared memory object %s: %s: %w",
+			clean, step, syscall.Errno(errno))
 	}
 	defer C.free(buf)
 	return C.GoBytes(buf, C.int(size)), nil

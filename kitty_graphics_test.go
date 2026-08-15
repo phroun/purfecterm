@@ -816,3 +816,48 @@ func TestKittyComposeProbeIsAccepted(t *testing.T) {
 		t.Errorf("%d probes accepted, want all three: %q", n, *replies)
 	}
 }
+
+// The diagnostics are opt-in and record the failures a client never sees: a
+// q=2 command silences its own error, which is exactly when the terminal has
+// to be able to say what went wrong.
+func TestGraphicsLogRecordsSilencedFailures(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gfx.log")
+	t.Setenv("PURFECTERM_GRAPHICS_LOG", path)
+	resetGraphicsLogForTest()
+	t.Cleanup(resetGraphicsLogForTest)
+
+	_, p, replies := newKittyTestBuffer()
+	// t=f naming a file that does not exist, silenced with q=2.
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,t=f,q=2", []byte("/nonexistent/purfecterm-test")))
+
+	if len(*replies) != 0 {
+		t.Errorf("q=2 still replied: %q", *replies)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no log written: %v", err)
+	}
+	log := string(data)
+	if !strings.Contains(log, "APC _G") {
+		t.Errorf("log does not record the command: %q", log)
+	}
+	if !strings.Contains(log, "ENOENT") {
+		t.Errorf("log does not record the silenced failure: %q", log)
+	}
+	if !strings.Contains(log, "/nonexistent/purfecterm-test") {
+		t.Errorf("log does not name what could not be read: %q", log)
+	}
+}
+
+// With the variable unset nothing is opened and nothing is written.
+func TestGraphicsLogIsOffByDefault(t *testing.T) {
+	t.Setenv("PURFECTERM_GRAPHICS_LOG", "")
+	resetGraphicsLogForTest()
+	t.Cleanup(resetGraphicsLogForTest)
+
+	if GraphicsLoggingEnabled() {
+		t.Error("graphics logging is on without being asked for")
+	}
+	_, p, _ := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1", rgbaPayload(2, 2, 1, 1, 1, 255)))
+}
