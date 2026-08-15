@@ -332,8 +332,11 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 		return []byte{0x0d}
 	}
 
-	// Backspace with modifiers
-	if baseKey == "Backspace" {
+	// Backspace with modifiers. "Delete" is the same key: direct-key-handler
+	// names BS (8) and DEL (127) apart because it cannot tell which one a
+	// terminal will send for its backspace, but both erase behind the cursor,
+	// so both encode the same way going out. (Forward delete is "FDel".)
+	if baseKey == "Backspace" || baseKey == "Delete" {
 		if mod == 3 { // Alt+Backspace
 			return []byte{0x1b, 0x7f}
 		}
@@ -399,7 +402,7 @@ var f1f4Code = map[string]byte{
 
 var tildeKeyCode = map[string]string{
 	"Insert":   "2",
-	"Delete":   "3",
+	"FDel":     "3", // forward delete; the erase-behind keys are handled above
 	"PageUp":   "5",
 	"PageDown": "6",
 	"F5":       "15",
@@ -416,11 +419,20 @@ var tildeKeyCode = map[string]string{
 // Modified keys are handled dynamically by encodeModifiedKey.
 var keyToBytesMap = map[string][]byte{
 	// Control keys
-	"Enter":     {13},
-	"Tab":       {9},
-	"Backspace": {127}, // Most terminals send DEL for backspace
-	"Escape":    {27},
-	"Space":     {32},
+	"Enter":  {13},
+	"Tab":    {9},
+	"Escape": {27},
+	"Space":  {32},
+
+	// The two erase-behind keys. direct-key-handler names BS (8) and DEL (127)
+	// apart on the way IN, because a terminal's backspace sends one or the
+	// other by lineage and only the application can decide whether it cares.
+	// Going OUT there is nothing to decide: both mean erase behind, and what a
+	// terminal sends for that is DEL. Emitting BS here instead would be read as
+	// Ctrl-H by any guest that maps input to key events — a browser has no
+	// binding for Ctrl-H, so the keystroke would simply vanish.
+	"Backspace": {127},
+	"Delete":    {127},
 
 	// Arrow keys
 	"Up":    {0x1b, '[', 'A'},
@@ -432,7 +444,7 @@ var keyToBytesMap = map[string][]byte{
 	"Home":     {0x1b, '[', 'H'},
 	"End":      {0x1b, '[', 'F'},
 	"Insert":   {0x1b, '[', '2', '~'},
-	"Delete":   {0x1b, '[', '3', '~'},
+	"FDel":     {0x1b, '[', '3', '~'}, // forward delete
 	"PageUp":   {0x1b, '[', '5', '~'},
 	"PageDown": {0x1b, '[', '6', '~'},
 
