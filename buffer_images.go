@@ -31,6 +31,17 @@ type PlacedImage struct {
 	// cells can find it, and skipped by an ordinary draw pass.
 	Virtual bool
 
+	// ParentImageID and ParentPlacementID make this a RELATIVE placement (the
+	// protocol's P= and Q=): it has no anchor of its own but sits OffsetH cells
+	// right and OffsetV cells down from its parent's top-left corner, moves
+	// whenever the parent does, and is deleted with it. Row and Col hold where
+	// that resolved to when the placement was made, which keeps deletion by
+	// position workable; the draw list re-resolves them against where the
+	// parent is now. Zero for an ordinary placement.
+	ParentImageID     uint32
+	ParentPlacementID uint32
+	OffsetH, OffsetV  int
+
 	// SrcX/SrcY/SrcW/SrcH crop the source image before drawing; zero width or
 	// height means the whole image. This is the protocol's x/y/w/h.
 	SrcX, SrcY, SrcW, SrcH int
@@ -249,30 +260,8 @@ func (p *PlacedImage) SourceRect() (x, y, w, h int) {
 	return x, y, w, h
 }
 
-// GetImagesByZ returns the placed images a renderer should draw, split by
-// whether they belong under or over the text. Each group is ordered back to
-// front. Virtual placements are excluded: they are drawn from the placeholder
-// cells that reference them, not from the placement list.
-//
-// A renderer that does not implement z-ordering can keep calling GetImages and
-// draw everything over the text, which is where images went before z existed.
-func (b *Buffer) GetImagesByZ() (below, above []*PlacedImage) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	for _, im := range b.images {
-		if im.Virtual {
-			continue
-		}
-		if im.ZIndex < 0 {
-			below = append(below, im)
-		} else {
-			above = append(above, im)
-		}
-	}
-	sortByZ(below)
-	sortByZ(above)
-	return below, above
-}
+// GetImagesByZ lives in kitty_render.go: what a renderer draws is a resolved
+// view of this list, not the list itself.
 
 // sortByZ orders a group back to front, keeping placement order within one
 // z-index so that equal-z images stack in the order they arrived.
@@ -324,10 +313,64 @@ func (b *Buffer) DeleteImagesFunc(match func(*PlacedImage) bool) int {
 		kept = append(kept, im)
 	}
 	b.images = kept
+	n += b.dropOrphanedRelativesLocked()
 	if n > 0 {
 		b.markDirty()
 	}
 	return n
+}
+
+// dropOrphanedRelativesLocked removes relative placements whose parent is no
+// longer placed, repeating so that a chain of them dies with its root. A
+// relative placement has no position of its own, so outliving its parent would
+// leave it either undrawable or stuck at a stale anchor. Caller holds the lock.
+func (b *Buffer) dropOrphanedRelativesLocked() int {
+	dropped := 0
+	for pass := 0; pass < maxKittyRelativeDepth; pass++ {
+		alive := make(map[kittyRef]bool, len(b.images)*2)
+		for _, im := range b.images {
+			if im.ImageID == 0 {
+				continue
+			}
+			alive[kittyRef{im.ImageID, im.PlacementID}] = true
+			// A child that named no placement ID refers to whichever placement
+			// of that image there is, so any surviving one keeps it anchored.
+			alive[kittyRef{im.ImageID, 0}] = true
+		}
+		kept := b.images[:0]
+		this := 0
+		for _, im := range b.images {
+			if im.ParentImageID != 0 && !alive[kittyRef{im.ParentImageID, im.ParentPlacementID}] {
+				this++
+				continue
+			}
+			kept = append(kept, im)
+		}
+		b.images = kept
+		dropped += this
+		if this == 0 {
+			break
+		}
+	}
+	return dropped
+}
+
+// PlacementPosition returns where a placement sits, for resolving a relative
+// placement's anchor. A zero placementID matches whichever placement of the
+// image exists, which is what a client that never assigned one means.
+func (b *Buffer) PlacementPosition(imageID, placementID uint32) (row, col int, ok bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, im := range b.images {
+		if im.ImageID != imageID {
+			continue
+		}
+		if placementID != 0 && im.PlacementID != placementID {
+			continue
+		}
+		return im.Row, im.Col, true
+	}
+	return 0, 0, false
 }
 
 // HasPlacementFor reports whether any placement references a stored image.
