@@ -177,6 +177,23 @@ func applyAppCursorKeys(key string, b []byte) []byte {
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.
 // Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
+	// A name carrying an event or side suffix is not a plain keystroke.
+	//
+	// ":Release" is a key coming up and ":Left"/":Right" say which of a paired
+	// modifier key was involved — things a legacy PTY has no way to express, so
+	// there is nothing to send. ":Repeat" is the opposite case: an auto-repeat
+	// IS another keystroke, and what a terminal sends for it is the character
+	// again, so the suffix comes off and the key underneath encodes normally.
+	//
+	// Without this the suffix rode along into the lookups, matched nothing, and
+	// the whole name reached the guest as text.
+	if base, suffix, ok := splitEventSuffix(key); ok {
+		if suffix != ":Repeat" {
+			return nil
+		}
+		key = base
+	}
+
 	// Check explicit mappings first. The name is resolved to a Key and the
 	// bytes are looked up under that, so this table is indexed by whatever
 	// direct-key-handler currently calls the key rather than by a word copied
@@ -192,33 +209,9 @@ func keyToBytes(key string) []byte {
 		return []byte(key)
 	}
 
-	// Control keys: ^A through ^Z
-	if len(key) == 2 && key[0] == '^' {
-		ch := key[1]
-		if ch >= 'A' && ch <= 'Z' {
-			return []byte{ch - 'A' + 1}
-		}
-		if ch >= 'a' && ch <= 'z' {
-			return []byte{ch - 'a' + 1}
-		}
-		if ch == '@' {
-			return []byte{0}
-		}
-		if ch == '[' {
-			return []byte{27}
-		}
-		if ch == '\\' {
-			return []byte{28}
-		}
-		if ch == ']' {
-			return []byte{29}
-		}
-		if ch == '^' {
-			return []byte{30}
-		}
-		if ch == '_' {
-			return []byte{31}
-		}
+	// Control chords: ^A through ^Z, and the punctuation ones.
+	if b, ok := controlByte(key); ok {
+		return []byte{b}
 	}
 
 	// Glyph modifier (private kitty extension): a "G-"-prefixed key carries an
@@ -282,6 +275,58 @@ func unknownKeyBytes(name string) []byte {
 	return []byte("<" + name + ">")
 }
 
+// eventSuffixes are the event and side markers direct-key-handler can trail a
+// name with. They mirror that package's own list; a name never carries more
+// than one.
+var eventSuffixes = []string{":Release", ":Repeat", ":Left", ":Right"}
+
+// splitEventSuffix separates a trailing event or side marker from the key name
+// it decorates, reporting whether there was one.
+func splitEventSuffix(key string) (base, suffix string, ok bool) {
+	for _, s := range eventSuffixes {
+		if strings.HasSuffix(key, s) {
+			return key[:len(key)-len(s)], s, true
+		}
+	}
+	return key, "", false
+}
+
+// controlByte answers the ASCII control code a caret chord names — "^A" is 1,
+// "^[" is 27 — and whether the name is a caret chord at all.
+//
+// direct-key-handler spells Control with a caret against the keys the caret is
+// natural for rather than with a "C-" prefix, so this is the shape Ctrl chords
+// arrive in. It is a function rather than an inline block because the caret is
+// also the BASE of every Ctrl chord that carries a further modifier: Alt+Ctrl+A
+// arrives as "M-^A", and encodeModifiedKey needs the same answer this does.
+//
+// Note the ok result carries the meaning, not the byte: "^@" is NUL, a real
+// encoding whose value is zero.
+func controlByte(name string) (byte, bool) {
+	if len(name) != 2 || name[0] != '^' {
+		return 0, false
+	}
+	switch ch := name[1]; {
+	case ch >= 'A' && ch <= 'Z':
+		return ch - 'A' + 1, true
+	case ch >= 'a' && ch <= 'z':
+		return ch - 'a' + 1, true
+	case ch == '@':
+		return 0, true
+	case ch == '[':
+		return 27, true
+	case ch == '\\':
+		return 28, true
+	case ch == ']':
+		return 29, true
+	case ch == '^':
+		return 30, true
+	case ch == '_':
+		return 31, true
+	}
+	return 0, false
+}
+
 // parseModifiers extracts modifier flags and base key from a key string.
 // Returns xterm modifier code (2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, etc.) and base key.
 // Returns 0 if no modifiers.
@@ -316,15 +361,39 @@ func parseModifiers(key string) (int, string) {
 func encodeModifiedKey(mod int, baseKey string) []byte {
 	modChar := byte('0' + mod)
 
-	// Handle single character with Alt (M-x)
-	if len(baseKey) == 1 {
-		if mod == 3 { // Just Alt
-			return []byte{0x1b, baseKey[0]}
+	// The xterm modifier code is 1 + a bitmask (Shift 1, Alt 2, Ctrl 4), so the
+	// bits have to be read out of mod-1. Testing them against mod directly made
+	// every code with the 2 bit set look like Alt — code 2 is Shift alone, and
+	// it was being encoded as Alt.
+	const modAlt = 2
+	hasAlt := (mod-1)&modAlt != 0
+
+	// A caret chord carrying a further modifier: "M-^A" is Alt+Ctrl+A, "S-^A" is
+	// Ctrl+Shift+A, "M-S-^A" is both. The caret already holds the Control, so
+	// what is left to encode is whatever rides alongside it.
+	//
+	// Shift has nowhere to go: an ASCII control code is five bits and has no
+	// room for it, which is why a legacy terminal sends plain ^A for
+	// Ctrl+Shift+A too. Degrading to ^A is therefore not a loss this introduces
+	// — it is what the wire has always done. Alt keeps its ESC prefix.
+	//
+	// These arrive only under the kitty protocol, and all four of them used to
+	// fall out of this function as nil and be dropped without a trace.
+	if b, ok := controlByte(baseKey); ok {
+		if hasAlt {
+			return []byte{0x1b, b}
 		}
-		// Alt+Shift+char or other combos - send ESC then char
-		// (terminals vary in how they handle this)
-		if mod&2 != 0 { // Has Alt
-			return []byte{0x1b, baseKey[0]}
+		return []byte{b}
+	}
+
+	// A single printable character with modifiers, measured in RUNES: "M-€" is
+	// one character in three bytes, and a byte-length test sent it here to be
+	// dropped. Ctrl and Shift do not appear in this shape — Ctrl arrives as a
+	// caret chord, handled above, and Shift is carried by the character's own
+	// case — so Alt is the only modifier there is anything to encode.
+	if r := []rune(baseKey); len(r) == 1 {
+		if hasAlt {
+			return append([]byte{0x1b}, baseKey...)
 		}
 		return nil
 	}
