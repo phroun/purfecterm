@@ -323,13 +323,26 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 		}
 	}
 
-	// Enter with modifiers
-	if baseKey == "Enter" {
-		if mod == 3 { // Alt+Enter
+	// The home-row key with modifiers. This branch was written when the name
+	// for it was "Enter"; upstream now calls the home-row key "Return" and
+	// gives "Enter" to the keypad's, so the behavior moves to the name it
+	// always described rather than staying on the word.
+	if baseKey == "Return" {
+		if mod == 3 { // Alt+Return
 			return []byte{0x1b, 0x0d}
 		}
 		// Other modifier combos - just send CR
 		return []byte{0x0d}
+	}
+
+	// The keypad's Enter with modifiers: its own sequence behind an ESC for
+	// Alt, the same shape as the home-row key above. Sending CR here would put
+	// the two keys back together, which is what the split exists to prevent.
+	if baseKey == "Enter" {
+		if mod == 3 { // Alt+Enter
+			return []byte{0x1b, 0x1b, 'O', 'M'}
+		}
+		return []byte{0x1b, 'O', 'M'}
 	}
 
 	// Backspace with modifiers. "Delete" is the same key: direct-key-handler
@@ -419,10 +432,25 @@ var tildeKeyCode = map[string]string{
 // Modified keys are handled dynamically by encodeModifiedKey.
 var keyToBytesMap = map[string][]byte{
 	// Control keys
-	"Enter":  {13},
 	"Tab":    {9},
 	"Escape": {27},
 	"Space":  {32},
+
+	// The two Enter keys, kept apart on the wire.
+	//
+	// "Return" is the home-row key and sends CR. "Enter" is the keypad's, and
+	// sending CR for it too would erase the difference in the one direction
+	// where it can still be expressed: a guest handed CR cannot know which key
+	// was struck, and neither can this package when the bytes come back. SS3 M
+	// is what a terminal sends for the keypad's Enter in application keypad
+	// mode (DECKPAM), and it is the only encoding that round-trips — feed it
+	// back to direct-key-handler and "Enter" comes out.
+	//
+	// The keypad is treated as being in application mode always. Numeric mode
+	// would have it send CR, which is the conflation this is avoiding, so the
+	// distinction wins over the mode.
+	"Return": {13},
+	"Enter":  {0x1b, 'O', 'M'},
 
 	// The two erase-behind keys. direct-key-handler names BS (8) and DEL (127)
 	// apart on the way IN, because a terminal's backspace sends one or the
