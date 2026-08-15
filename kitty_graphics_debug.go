@@ -12,6 +12,7 @@ package purfecterm
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -68,4 +69,72 @@ func resetGraphicsLogForTest() {
 	}
 	graphicsLogFile = nil
 	graphicsLogOnce = sync.Once{}
+}
+
+// DescribePlacement summarises what a renderer is about to draw, for the
+// graphics log. It samples the source rather than scanning it — a full-window
+// frame is twenty million pixels and this runs per paint — which is enough to
+// tell a picture from an empty canvas.
+//
+// This exists because the protocol log answers "what was the terminal told"
+// and not "what did it draw", and those diverge exactly where a frame is
+// composed into the wrong place: every command succeeds and the screen stays
+// dark.
+func DescribePlacement(p *PlacedImage) string {
+	if p == nil || p.Image == nil {
+		return "<nil placement>"
+	}
+	sx, sy, sw, sh := p.SourceRect()
+	dw, dh := p.DestSize()
+
+	var sampled, opaque int
+	const step = 16
+	for y := sy; y < sy+sh; y += step {
+		for x := sx; x < sx+sw; x += step {
+			if x < 0 || y < 0 || x >= p.Image.W || y >= p.Image.H {
+				continue
+			}
+			sampled++
+			if p.Image.RGBA[(y*p.Image.W+x)*4+3] != 0 {
+				opaque++
+			}
+		}
+	}
+	pct := 0
+	if sampled > 0 {
+		pct = opaque * 100 / sampled
+	}
+	return fmt.Sprintf(
+		"image=%d placement=%d cell=(%d,%d) %dx%d src=(%d,%d %dx%d) dest=%dx%d z=%d opaque=%d%%",
+		p.ImageID, p.PlacementID, p.Col, p.Row, p.CellsWide, p.CellsHigh,
+		sx, sy, sw, sh, dw, dh, p.ZIndex, pct)
+}
+
+// logPlacements records a paint's placements, rate limited: a render loop
+// paints continuously and an unbounded log would bury the thing being looked
+// for. Only a change in what is drawn is worth a line.
+var lastPlacementSummary string
+
+// LogPlacements is the exported entry point a renderer calls.
+func LogPlacements(where string, images []*PlacedImage) {
+	if !GraphicsLoggingEnabled() {
+		return
+	}
+	var b strings.Builder
+	for _, im := range images {
+		b.WriteString("\n    " + DescribePlacement(im))
+	}
+	summary := b.String()
+	graphicsLogMu.Lock()
+	changed := summary != lastPlacementSummary
+	lastPlacementSummary = summary
+	graphicsLogMu.Unlock()
+	if !changed {
+		return
+	}
+	if summary == "" {
+		logGraphics("PAINT %s: no placements", where)
+		return
+	}
+	logGraphics("PAINT %s drawing %d:%s", where, len(images), summary)
 }

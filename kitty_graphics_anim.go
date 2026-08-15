@@ -1,5 +1,7 @@
 package purfecterm
 
+import "os"
+
 // Animation for the kitty graphics protocol: a=f transmits frame data, a=a
 // controls playback.
 //
@@ -281,6 +283,18 @@ func (p *Parser) composeKittyFrames(cmd kittyCmd) {
 		p.buffer.mu.Unlock()
 		p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such frame")
 		return
+	}
+
+	// Which frame supplies the pixels and which receives them is the one thing
+	// in this protocol the documentation states two ways: its key table calls
+	// r "the frame being edited" and c "the frame whose data is overlaid",
+	// while its own summary of x/y and X/Y reverses source and destination.
+	// The reading below follows the key table. PURFECTERM_KITTY_COMPOSE_SWAP
+	// takes the other one, so the question can be settled by observation
+	// rather than by re-reading the sentence; this switch goes away once it is.
+	if os.Getenv("PURFECTERM_KITTY_COMPOSE_SWAP") == "1" {
+		dst, src = src, dst
+		logGraphics("  -- compose swapped: frame %d <- frame %d", cmd.cols, cmd.rows)
 	}
 
 	w, h := cmd.srcW, cmd.srcH

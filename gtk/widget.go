@@ -1933,6 +1933,8 @@ func (w *Widget) onDraw(da *gtk.DrawingArea, cr *cairo.Context) bool {
 	// Images at a NEGATIVE z-index go under the text, which is what makes
 	// text-over-image work; the rest are drawn after the glyphs below.
 	imagesBelow, imagesAbove := w.buffer.GetImagesByZ()
+	purfecterm.LogPlacements("gtk", append(append([]*purfecterm.PlacedImage{},
+		imagesBelow...), imagesAbove...))
 	w.renderImages(cr, imagesBelow, charWidth, charHeight, scrollOffset, horizOffset)
 
 	// Set up font
