@@ -150,8 +150,9 @@ func (p *Parser) executeKeyboardProtocol() bool {
 	switch p.csiPrivate {
 	case '?': // query
 		if p.responseSink != nil {
-			p.responseSink([]byte("\x1b[?" +
-				itoa(p.buffer.KeyboardFlags()) + "u"))
+			reply := "\x1b[?" + itoa(p.buffer.KeyboardFlags()) + "u"
+			logGraphics("CSI ? u  <- %q", reply)
+			p.responseSink([]byte(reply))
 		}
 		return true
 	case '>': // push

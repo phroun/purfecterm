@@ -486,6 +486,7 @@ func (p *Parser) respondKitty(cmd kittyCmd, id, number uint32, status string) {
 		b.WriteString(",I=" + strconv.FormatUint(uint64(number), 10))
 	}
 	b.WriteString(";" + status + "\x1b\\")
+	logGraphics("  <- %q", b.String())
 	p.responseSink([]byte(b.String()))
 }
 
@@ -495,9 +496,14 @@ func (p *Parser) respondKittyError(cmd kittyCmd, id uint32, code, detail string)
 	// which is exactly when a diagnostic is worth having.
 	logGraphics("  -> ERROR i=%d %s: %s", id, code, detail)
 	if p.responseSink == nil || cmd.quiet >= 2 {
+		if cmd.quiet >= 2 {
+			logGraphics("  <- (suppressed by q=%d)", cmd.quiet)
+		}
 		return
 	}
-	p.responseSink([]byte(fmt.Sprintf("\x1b_Gi=%d;%s:%s\x1b\\", id, code, detail)))
+	reply := fmt.Sprintf("\x1b_Gi=%d;%s:%s\x1b\\", id, code, detail)
+	logGraphics("  <- %q", reply)
+	p.responseSink([]byte(reply))
 }
 
 // readKittyExternal loads a payload from a file, temp file or shared memory
