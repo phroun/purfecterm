@@ -13,10 +13,15 @@ import (
 // returned nil too because the name contains a "-". The keystroke went nowhere,
 // with nothing logged and nothing sent.
 //
-// These forms come only from the kitty protocol. A legacy terminal has no way
-// to say Ctrl+Shift+A at all, which is also why Shift is dropped here: an ASCII
-// control code is five bits with no room for it, so ^A is what the wire carries
-// for both, and that is a property of the encoding rather than a choice.
+// These forms come only from the kitty protocol. Shift is dropped on the way
+// out because the LEGACY encoding has no room for it — an ASCII control code is
+// five bits — so ^A is what that wire carries for both chords.
+//
+// That is a limit of the encoding chosen here, not of the chord. The kitty
+// protocol says Ctrl+Shift+A perfectly well, as CSI 97;6u, which is how it
+// arrived. This encoder emits the legacy form unconditionally because it
+// consults none of the flags keyboard_protocol.go negotiates, so the loss is
+// real today and is not permanent.
 func TestControlChordsWithAModifierAreEncoded(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
 		{"M-^A", "\x1b\x01", "Alt+Ctrl+A: ESC before the control code"},
@@ -125,6 +130,42 @@ func TestAltBitComesFromTheModifierBitmask(t *testing.T) {
 	}
 }
 
+// No key name encodes to nothing.
+//
+// This is the invariant the rest of this file is a special case of. Whatever a
+// key name is — a chord this encoder cannot build, an event it cannot express,
+// a modifier prefix it does not parse, a key from a protocol level it does not
+// speak — it produces bytes, and if there is no encoding those bytes are the
+// name in angle brackets.
+//
+// The rule exists because the alternative is an encoder deciding, from its own
+// inability to spell something, that the keypress did not occur. That decision
+// is not this layer's to make: direct-key-handler emits what it emits because
+// it was built to, and a consumer that cannot represent a token has a gap, not
+// a licence to discard it. A gap belongs at the guest where somebody can see
+// it.
+func TestNoKeyNameEncodesToNothing(t *testing.T) {
+	for _, key := range []string{
+		"C-Nonsense", // a modified chord with no encoding
+		"M-F13",      // a modified function key this encoder lacks
+		"C-CapsLock", // a modified lock key
+		"M-a:Repeat", // a modified auto-repeat
+		"a:Release",  // a key coming up
+		"S-:Left",    // which of a paired modifier key it was
+		"s-a",        // Super, a prefix parseModifiers does not read
+		"m-a",        // Meta proper, likewise
+		"G-abc",      // a glyph chord with no single-rune payload
+		"^AB",        // a caret name that is not a control chord
+		"F13",        // a plain key with no encoding
+		"CapsLock",   // a plain lock key
+	} {
+		if keyToBytes(key) == nil {
+			t.Errorf("%s encodes to nothing; an unencodable key must stay visible "+
+				"at the guest, not vanish", key)
+		}
+	}
+}
+
 // A name carrying an event suffix has no encoding here, and that is an
 // UNIMPLEMENTED FEATURE, not a decision this encoder gets to make.
 //
@@ -144,7 +185,11 @@ func TestAltBitComesFromTheModifierBitmask(t *testing.T) {
 // are now honoured, the right change is to assert the CSI-u encoding — not to
 // restore a suppression.
 func TestEventSuffixesHaveNoEncodingYet(t *testing.T) {
-	for _, key := range []string{"a:Release", "Return:Release", "a:Repeat"} {
+	for _, key := range []string{
+		"a:Release", "Return:Release", "a:Repeat",
+		"M-a:Repeat", // the modified form, which used to vanish silently
+		"S-:Left",    // a modifier key's side, likewise
+	} {
 		got := keyToBytes(key)
 		if got == nil {
 			t.Errorf("%s: dropped silently; an unencoded event must stay visible", key)

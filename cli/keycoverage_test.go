@@ -6,13 +6,21 @@ import (
 	"github.com/phroun/direct-key-handler/keyboard"
 )
 
-// unencodable lists the keys this package deliberately has no bytes for.
+// unencodable lists the keys this package has no bytes for.
 //
-// A terminal has no byte sequence for a lock or a system key: pressing Caps
-// Lock changes the state a later keystroke arrives in, and sends nothing of its
-// own. F13-F20 are a different kind of gap — xterm does encode them, this
-// encoder just never has, and the list says so rather than letting the silence
-// speak.
+// "Unencodable" names the state of this encoder, not a fact about keyboards.
+// The legacy wire has no sequence for a lock or a system key — Caps Lock
+// changes the state a later keystroke arrives in and sends nothing of its own —
+// but the kitty protocol reports every one of these under
+// KeyboardReportAllKeys, which keyboard_protocol.go already negotiates and this
+// encoder does not yet honour. F13-F20 are plainly just missing:
+// direct-key-handler decodes them from kitty codepoints 57376+ and there is no
+// legacy form it reads, so encoding them means implementing the CSI-u path
+// rather than guessing a sequence that cannot round-trip.
+//
+// Each of these reaches the guest bracketed, so the gap is visible where it
+// happens. Listing them here says the omission is known, not that the keys are
+// somehow not keys.
 var unencodable = map[keyboard.Key]bool{
 	keyboard.KeyCapsLock:    true,
 	keyboard.KeyNumLock:     true,

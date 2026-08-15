@@ -51,12 +51,11 @@ func TestUnknownKeyNameGoesOutBracketed(t *testing.T) {
 			"é", got)
 	}
 
-	// A modified chord this encoder cannot build still returns nil rather than
-	// brackets. nil means "not consumed", which is what lets an embedding host
-	// act on a chord purfecterm has no encoding for; bracketing would swallow it.
-	if got := keyToBytes("C-Nonsense"); got != nil {
-		t.Errorf("keyToBytes(%q) = %q, want nil so the host keeps the chord",
-			"C-Nonsense", string(got))
+	// A modified chord this encoder cannot build is bracketed too. It used to
+	// return nil and send nothing, justified by nil meaning "not consumed" —
+	// but no caller reads that bool, so the chord simply vanished.
+	if got := string(keyToBytes("C-Nonsense")); got != "<C-Nonsense>" {
+		t.Errorf("keyToBytes(%q) = %q, want %q", "C-Nonsense", got, "<C-Nonsense>")
 	}
 }
 

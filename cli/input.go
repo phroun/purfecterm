@@ -228,27 +228,29 @@ func keyToBytes(key string) []byte {
 		return []byte(key)
 	}
 
-	// Anything still here is a name, not a character, and this encoder has no
-	// bytes for it. Send it bracketed rather than bare.
+	// Anything still here has no encoding in this package, and it goes out
+	// bracketed: "<F13>", "<C-Menu>", "<M-a:Repeat>", "<a:Release>".
 	//
-	// Bare was the old behavior and it was actively misleading: a name typed as
-	// its own letters is indistinguishable at the guest from the user having
-	// typed those letters, so the two failures this can represent — a key with
-	// no encoding, and a name that stopped matching after an upstream rename —
-	// both surfaced as ordinary-looking text. "<Return>" appearing in a shell
-	// prompt names the key that went unencoded and is greppable; "Return" just
-	// looks like someone typed a word.
+	// EVERY unencodable shape lands here, modified chords and suffixed names
+	// included. They used to return nil, which sent nothing and left no trace,
+	// and the reason given for it was that nil means "not consumed" so an
+	// embedding host still gets its chance — but neither caller reads that
+	// bool: cli/input.go's OnKey discards it, and mew's trinket discards it and
+	// returns true unconditionally. So nil was not preserving anything. It was
+	// this encoder concluding, from its own inability to spell a key, that the
+	// keypress did not happen.
 	//
-	// Only the unmodified, non-control shape is bracketed. A modified chord
-	// still returns nil, and nil is not a lesser version of this: it means the
-	// key was NOT consumed, so handleKey reports false and an embedding host
-	// keeps its chance to act on the chord. Bracketing those would quietly
-	// swallow every host binding this encoder happens not to know.
-	if key[0] != '^' && !strings.Contains(key, "-") {
-		return unknownKeyBytes(key)
-	}
-
-	return nil
+	// What it cannot spell is a gap in this package and nowhere else. The kitty
+	// keyboard protocol is negotiated in full by keyboard_protocol.go —
+	// disambiguation, event reporting, alternates, all-keys, associated text —
+	// and none of those flags is consulted on the way out. Until they are, the
+	// honest report of a key this encoder has no bytes for is a mark at the
+	// guest saying so, not silence that reads as a decision.
+	//
+	// Bare letters, the oldest behavior, were worse than either: a name typed as
+	// its own characters is indistinguishable from the user having typed them,
+	// so a key that stopped working looked like ordinary text.
+	return unknownKeyBytes(key)
 }
 
 // unknownKeyBytes is what a key name with no encoding sends: the name in angle
