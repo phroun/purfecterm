@@ -231,3 +231,99 @@ func compositeBitmap(canvas, patch *Bitmap, x, y int, replace bool) {
 		}
 	}
 }
+
+// composeKittyFrames handles a=c: copy a rectangle from one frame onto another.
+//
+// This is how a client updates only what changed — keep the previous frame,
+// overlay the damaged region — which is why it turns out to be as load-bearing
+// as frame transfer itself for anything streaming a moving picture.
+//
+// The key letters do NOT mean here what they mean elsewhere in the protocol,
+// which is a wart worth naming: x,y are the DESTINATION edge (against a=f,
+// where they are where the transmitted data lands), X,Y are the SOURCE edge
+// (against a=f, where X is a replace flag and Y a background colour), and C is
+// the composition mode (against a placement, where it suppresses cursor
+// movement).
+func (p *Parser) composeKittyFrames(cmd kittyCmd) {
+	img := p.lookupKittyImage(cmd)
+	if img == nil {
+		p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such image")
+		return
+	}
+
+	p.buffer.mu.Lock()
+	img.ensureRootFrame()
+	dst := img.frameAt(cmd.rows) // r= the frame being edited
+	src := img.frameAt(cmd.cols) // c= the frame supplying the pixels
+	if dst == nil || src == nil {
+		p.buffer.mu.Unlock()
+		p.respondKittyError(cmd, cmd.imageID, "ENOENT", "no such frame")
+		return
+	}
+
+	w, h := cmd.srcW, cmd.srcH
+	if w <= 0 {
+		w = src.bitmap.W
+	}
+	if h <= 0 {
+		h = src.bitmap.H
+	}
+	// Editing a frame must not disturb anything still pointing at its pixels,
+	// so the edit lands on a copy that replaces it.
+	edited := cloneBitmap(dst.bitmap)
+	copyBitmapRect(edited, src.bitmap,
+		cmd.cellOffX, cmd.cellOffY, // X,Y: source edge
+		cmd.srcX, cmd.srcY, // x,y: destination edge
+		w, h, cmd.noCursorMove) // C=1: overwrite rather than blend
+	dst.bitmap = edited
+
+	// A placement showing this frame shows the edit.
+	if img.current == cmd.rows {
+		for _, im := range p.buffer.images {
+			if im.ImageID == img.id {
+				im.Image = edited
+			}
+		}
+		p.buffer.markDirty()
+	}
+	p.buffer.mu.Unlock()
+
+	p.respondKitty(cmd, img.id, cmd.imageNumber, "OK")
+}
+
+// copyBitmapRect moves a w x h rectangle from src at (sx,sy) onto dst at
+// (dx,dy), blending unless replace is set. Both carry straight alpha.
+func copyBitmapRect(dst, src *Bitmap, sx, sy, dx, dy, w, h int, replace bool) {
+	if dst == nil || src == nil {
+		return
+	}
+	for row := 0; row < h; row++ {
+		syr, dyr := sy+row, dy+row
+		if syr < 0 || syr >= src.H || dyr < 0 || dyr >= dst.H {
+			continue
+		}
+		for col := 0; col < w; col++ {
+			sxc, dxc := sx+col, dx+col
+			if sxc < 0 || sxc >= src.W || dxc < 0 || dxc >= dst.W {
+				continue
+			}
+			si := (syr*src.W + sxc) * 4
+			di := (dyr*dst.W + dxc) * 4
+			sa := int(src.RGBA[si+3])
+			if replace || sa == 255 {
+				copy(dst.RGBA[di:di+4], src.RGBA[si:si+4])
+				continue
+			}
+			if sa == 0 {
+				continue
+			}
+			for k := 0; k < 3; k++ {
+				d := int(dst.RGBA[di+k])
+				s := int(src.RGBA[si+k])
+				dst.RGBA[di+k] = byte((s*sa + d*(255-sa)) / 255)
+			}
+			da := int(dst.RGBA[di+3])
+			dst.RGBA[di+3] = byte(sa + da*(255-sa)/255)
+		}
+	}
+}

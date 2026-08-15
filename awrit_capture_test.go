@@ -41,11 +41,15 @@ func TestAwritStartupLeavesNothingOnScreen(t *testing.T) {
 	// at all: told no, it exits on the spot without drawing anything, which is
 	// what refusing it did. Composition is still refused, and a client can work
 	// around that one.
-	if n := strings.Count(all, "EINVAL"); n != 1 {
-		t.Errorf("%d actions refused, want only the compose probe: %q", n, replies)
+	// Every capability probe must be ACCEPTED. awrit asks these to decide
+	// whether to run at all, and refusing any one of them makes it exit
+	// without drawing: told no about frames it stopped at the probe, told no
+	// about composition it skipped its image transmission entirely.
+	if strings.Contains(all, "EINVAL") {
+		t.Errorf("a capability probe was refused: %q", replies)
 	}
-	if n := strings.Count(all, "OK"); n < 2 {
-		t.Errorf("%d actions accepted, want at least the image and its frame: %q", n, replies)
+	if n := strings.Count(all, "OK"); n < 3 {
+		t.Errorf("%d probes accepted, want the image, its frame and the composition: %q", n, replies)
 	}
 	// The capture's own image arrives over SHARED MEMORY, naming an object that
 	// exists only on the machine it was captured from. Its absence here is the

@@ -608,26 +608,11 @@ func TestKittyImageStoreIsBounded(t *testing.T) {
 	})
 }
 
-// An action this terminal does not implement is answered with an ERROR, never
-// OK: a client sends these to discover what it may use, so claiming support is
-// what stops it falling back. Composition is the only one left in that
-// category — frames and animation control are implemented.
-func TestKittyComposeReportsUnsupported(t *testing.T) {
-	b, p, replies := newKittyTestBuffer()
-	p.Parse([]byte("\x1b_Ga=c,i=42,r=2\x1b\\"))
-	if len(*replies) != 1 || !strings.Contains((*replies)[0], "EINVAL") {
-		t.Errorf("a=c answered %q, want EINVAL", *replies)
-	}
-	if len(b.GetImages()) != 0 {
-		t.Error("a=c placed an image")
-	}
-}
-
 // A frame or animation command naming an image that was never transmitted is
 // ENOENT — a different answer from "not supported", and the one that tells a
 // client to retransmit rather than to give up on the feature.
 func TestKittyAnimationOnMissingImageIsNotFound(t *testing.T) {
-	for _, action := range []string{"f", "a"} {
+	for _, action := range []string{"f", "a", "c"} {
 		_, p, replies := newKittyTestBuffer()
 		p.Parse([]byte("\x1b_Ga=" + action + ",i=42,f=32,s=1,v=1\x1b\\"))
 		if len(*replies) != 1 || !strings.Contains((*replies)[0], "ENOENT") {
@@ -755,5 +740,79 @@ func TestKittyAnimationProbeIsAccepted(t *testing.T) {
 	}
 	if strings.Count(all, "OK") < 2 {
 		t.Errorf("replies = %q, want both the image and the frame accepted", *replies)
+	}
+}
+
+// a=c copies a rectangle from one frame onto another. This is how a client
+// updates only what changed — keep the previous frame, overlay the damaged
+// region — which makes it as load-bearing as frame transfer for anything
+// streaming a moving picture.
+func TestKittyComposeFrames(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	// Frame 1: 4x4 red. Frame 2: 4x4 blue.
+	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", rgbaPayload(4, 4, 255, 0, 0, 255)))
+	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,X=1", rgbaPayload(4, 4, 0, 0, 255, 255)))
+
+	// Copy a 2x2 rectangle from frame 1's origin onto frame 2 at (2,2).
+	// x,y are the DESTINATION edge; X,Y the source edge.
+	p.Parse([]byte("\x1b_Ga=c,i=1,r=2,c=1,x=2,y=2,X=0,Y=0,w=2,h=2,C=1\x1b\\"))
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+
+	img := b.GetImages()[0].Image
+	if r, _, _, _ := img.At(3, 3); r != 255 {
+		t.Errorf("the composed rectangle did not land at the destination edge")
+	}
+	if _, _, bl, _ := img.At(0, 0); bl != 255 {
+		t.Errorf("frame 2's own pixels were lost outside the composed rectangle")
+	}
+}
+
+// The source edge is X,Y — distinct from the destination x,y, and easy to
+// transpose since the same letters mean other things elsewhere in the protocol.
+func TestKittyComposeSourceAndDestinationEdgesAreDistinct(t *testing.T) {
+	b, p, _ := newKittyTestBuffer()
+	// Frame 1: 4x4 red with a single green pixel at (3,3).
+	base := rgbaPayload(4, 4, 255, 0, 0, 255)
+	i := (3*4 + 3) * 4
+	base[i], base[i+1], base[i+2] = 0, 255, 0
+	p.Parse(kittySeq("a=T,f=32,s=4,v=4,i=1,C=1", base))
+	p.Parse(kittySeq("a=f,f=32,s=4,v=4,i=1,X=1", rgbaPayload(4, 4, 0, 0, 255, 255)))
+
+	// Take the 1x1 SOURCE rect at (3,3) — the green pixel — to DESTINATION (0,0).
+	p.Parse([]byte("\x1b_Ga=c,i=1,r=2,c=1,X=3,Y=3,x=0,y=0,w=1,h=1,C=1\x1b\\"))
+	p.Parse([]byte("\x1b_Ga=a,i=1,r=2\x1b\\"))
+
+	img := b.GetImages()[0].Image
+	if _, g, _, _ := img.At(0, 0); g != 255 {
+		r, g2, bl, _ := img.At(0, 0)
+		t.Errorf("destination (0,0) = (%d,%d,%d), want the green source pixel — "+
+			"x/y and X/Y are transposed", r, g2, bl)
+	}
+}
+
+// Composing against a frame that does not exist is ENOENT, not a crash.
+func TestKittyComposeMissingFrame(t *testing.T) {
+	_, p, replies := newKittyTestBuffer()
+	p.Parse(kittySeq("a=T,f=32,s=2,v=2,i=1,C=1,q=1", rgbaPayload(2, 2, 1, 1, 1, 255)))
+	p.Parse([]byte("\x1b_Ga=c,i=1,r=9,c=1\x1b\\"))
+	if len(*replies) != 1 || !strings.Contains((*replies)[0], "ENOENT") {
+		t.Errorf("replies = %q, want ENOENT for a missing frame", *replies)
+	}
+}
+
+// The compose probe awrit sends must be ACCEPTED: told no, it skips its image
+// transmission entirely and exits.
+func TestKittyComposeProbeIsAccepted(t *testing.T) {
+	_, p, replies := newKittyTestBuffer()
+	p.Parse(kittySeq("f=24,i=4294111295,t=d,s=1,v=1,z=1", []byte{0, 0, 0}))
+	p.Parse(kittySeq("a=f,i=4294111295,f=24,t=d,s=1,v=1,z=1,r=2", []byte{0, 0, 0}))
+	p.Parse([]byte("\x1b_Ga=c,C=1,i=4294111295,r=2,c=1,x=0,y=0,w=1,h=1\x1b\\"))
+
+	all := strings.Join(*replies, "")
+	if strings.Contains(all, "EINVAL") || strings.Contains(all, "ENOENT") {
+		t.Errorf("a probe was refused: %q", *replies)
+	}
+	if n := strings.Count(all, "OK"); n < 3 {
+		t.Errorf("%d probes accepted, want all three: %q", n, *replies)
 	}
 }

@@ -207,12 +207,8 @@ func (p *Parser) executeKittyGraphics(body string) {
 		p.beginKittyTransfer(cmd)
 	case 'a': // animation control
 		p.controlKittyAnimation(cmd)
-	case 'c': // compose frames onto one another
-		// Composition of an existing frame onto another is not implemented.
-		// Unlike the frame and animation actions it is not load-bearing for a
-		// client that streams — those transmit and then select — so refusing
-		// it is an answer a client can work around rather than a wall.
-		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "compose not supported")
+	case 'c': // compose one frame onto another
+		p.composeKittyFrames(cmd)
 	default:
 		p.respondKittyError(cmd, cmd.imageID, "EINVAL", "unsupported action")
 	}
