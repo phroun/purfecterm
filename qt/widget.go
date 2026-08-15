@@ -2862,7 +2862,17 @@ func isModifierKey(key qt.Key) bool {
 
 // sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
 // Returns true if the event was consumed by mouse reporting.
+// sendMouseEventAt is sendMouseEvent with the event's RAW position, for the
+// pixel-reporting mode. Callers that have it should use this.
+func (w *Widget) sendMouseEventAt(button, cellX, cellY, pxX, pxY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, pxX, pxY, true, press)
+}
+
 func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, 0, 0, false, press)
+}
+
+func (w *Widget) sendMouseEventInternal(button, cellX, cellY, pxX, pxY int, havePixels bool, press bool) bool {
 	w.mu.Lock()
 	mouseReporting := w.mouseReportingEnabled
 	onInput := w.onInput
@@ -2885,7 +2895,37 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	if !w.buffer.IsFlexWidthModeEnabled() {
 		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
 	}
-	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
+	// SGR-Pixels (?1016) reports PIXELS, not cells. The encoder is agnostic —
+	// it writes whatever coordinates it is handed — so sending cell numbers
+	// under 1016 told the application every event happened within the first
+	// few pixels of the window. An application that asks for pixel precision
+	// is one that needs it: a browser cannot place a click on a cell grid.
+	//
+	// The pixels are DEVICE pixels, matching the cell size reported by
+	// CSI 16 t, so the two describe the same space. A renderer that pins a
+	// synthetic pointer grid gets that instead, which is what it is for.
+	rx, ry := reportX+1, cellY+1
+	if encodingMode == 1016 && havePixels {
+		scale := w.deviceScale()
+		unitW, unitH := w.buffer.GetPointerPixelUnit()
+		cellW, cellH := w.buffer.GetCellPixelSize()
+		px := (float64(pxX) - float64(terminalLeftPadding)) * scale
+		py := float64(pxY) * scale
+		if unitW > 0 && cellW > 0 && unitW != cellW {
+			px = px * float64(unitW) / float64(cellW)
+		}
+		if unitH > 0 && cellH > 0 && unitH != cellH {
+			py = py * float64(unitH) / float64(cellH)
+		}
+		if px < 0 {
+			px = 0
+		}
+		if py < 0 {
+			py = 0
+		}
+		rx, ry = int(px)+1, int(py)+1
+	}
+	data := purfecterm.EncodeMouseEvent(button, rx, ry, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true
@@ -2926,7 +2966,7 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 		if forwardToPTY {
 			// Forward right-click to PTY
 			mods := qtMouseModifiers(modifiers)
-			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			w.sendMouseEventAt(purfecterm.MouseButtonRight|mods, cellX, cellY, pos.X(), pos.Y(), true)
 			w.widget.SetFocus()
 			return
 		}
@@ -2950,7 +2990,7 @@ func (w *Widget) mousePressEvent(event *qt.QMouseEvent) {
 		}
 		mods := qtMouseModifiers(modifiers)
 		w.mouseDown = true
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, pos.X(), pos.Y(), true)
 		w.widget.SetFocus()
 		return
 	}
@@ -2988,7 +3028,7 @@ func (w *Widget) mouseReleaseEvent(event *qt.QMouseEvent) {
 			mouseBtn = purfecterm.MouseButtonLeft
 		}
 		w.mouseDown = false
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, pos.X(), pos.Y(), false)
 		return
 	}
 
@@ -3020,7 +3060,7 @@ func (w *Widget) mouseMoveEvent(event *qt.QMouseEvent) {
 			if w.mouseDown {
 				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
 			}
-			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+			w.sendMouseEventAt(btn|mods, cellX, cellY, pos.X(), pos.Y(), true)
 		}
 		return
 	}

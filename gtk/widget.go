@@ -2535,7 +2535,17 @@ func (w *Widget) screenToCell(screenX, screenY float64) (cellX, cellY int) {
 
 // sendMouseEvent sends an xterm-style mouse event to the PTY if mouse tracking is active.
 // Returns true if the event was consumed by mouse reporting.
+// sendMouseEventAt is sendMouseEvent with the event's RAW position, for the
+// pixel-reporting mode. Callers that have it should use this.
+func (w *Widget) sendMouseEventAt(button, cellX, cellY int, pxX, pxY float64, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, pxX, pxY, true, press)
+}
+
 func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
+	return w.sendMouseEventInternal(button, cellX, cellY, 0, 0, false, press)
+}
+
+func (w *Widget) sendMouseEventInternal(button, cellX, cellY int, pxX, pxY float64, havePixels bool, press bool) bool {
 	w.mu.Lock()
 	mouseReporting := w.mouseReportingEnabled
 	onInput := w.onInput
@@ -2558,8 +2568,37 @@ func (w *Widget) sendMouseEvent(button, cellX, cellY int, press bool) bool {
 	if !w.buffer.IsFlexWidthModeEnabled() {
 		reportX = w.buffer.LogicalToVisualCol(cellY, cellX)
 	}
-	// Convert to 1-based coordinates
-	data := purfecterm.EncodeMouseEvent(button, reportX+1, cellY+1, press, encodingMode)
+	// SGR-Pixels (?1016) reports PIXELS, not cells. The encoder is agnostic —
+	// it writes whatever coordinates it is handed — so sending cell numbers
+	// under 1016 told the application every event happened within the first
+	// few pixels of the window. An application that asks for pixel precision
+	// is one that needs it: a browser cannot place a click on a cell grid.
+	//
+	// The pixels are DEVICE pixels, matching the cell size reported by
+	// CSI 16 t, so the two describe the same space. A renderer that pins a
+	// synthetic pointer grid gets that instead, which is what it is for.
+	x, y := reportX+1, cellY+1
+	if encodingMode == 1016 && havePixels {
+		scale := w.deviceScale()
+		unitW, unitH := w.buffer.GetPointerPixelUnit()
+		cellW, cellH := w.buffer.GetCellPixelSize()
+		px := (pxX - float64(terminalLeftPadding)) * scale
+		py := pxY * scale
+		if unitW > 0 && cellW > 0 && unitW != cellW {
+			px = px * float64(unitW) / float64(cellW)
+		}
+		if unitH > 0 && cellH > 0 && unitH != cellH {
+			py = py * float64(unitH) / float64(cellH)
+		}
+		if px < 0 {
+			px = 0
+		}
+		if py < 0 {
+			py = 0
+		}
+		x, y = int(px)+1, int(py)+1
+	}
+	data := purfecterm.EncodeMouseEvent(button, x, y, press, encodingMode)
 	if data != nil {
 		onInput(data)
 		return true
@@ -2602,7 +2641,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		if forwardToPTY && !hasShift {
 			// Forward right-click to PTY
 			mods := gdkMouseModifiers(state)
-			w.sendMouseEvent(purfecterm.MouseButtonRight|mods, cellX, cellY, true)
+			w.sendMouseEventAt(purfecterm.MouseButtonRight|mods, cellX, cellY, x, y, true)
 			da.GrabFocus()
 			return true
 		}
@@ -2626,7 +2665,7 @@ func (w *Widget) onButtonPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 		mods := gdkMouseModifiers(state)
 		w.mouseDown = true // Track for motion events
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, true)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, x, y, true)
 		da.GrabFocus()
 		return true
 	}
@@ -2669,7 +2708,7 @@ func (w *Widget) onButtonRelease(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		}
 		mods := gdkMouseModifiers(state)
 		w.mouseDown = false
-		w.sendMouseEvent(mouseBtn|mods, cellX, cellY, false)
+		w.sendMouseEventAt(mouseBtn|mods, cellX, cellY, x, y, false)
 		return true
 	}
 
@@ -2707,7 +2746,7 @@ func (w *Widget) onMotionNotify(da *gtk.DrawingArea, ev *gdk.Event) bool {
 			if w.mouseDown {
 				btn = purfecterm.MouseButtonLeft | purfecterm.MouseMotionFlag
 			}
-			w.sendMouseEvent(btn|mods, cellX, cellY, true)
+			w.sendMouseEventAt(btn|mods, cellX, cellY, float64(x), float64(y), true)
 		}
 		// Request more motion events to prevent coalescing
 		C.request_motion_events(motion)
