@@ -107,3 +107,40 @@ func TestOverriddenModifiersReachTheWire(t *testing.T) {
 			string(hyper), want)
 	}
 }
+
+// A letter-suffix key with nothing following it carries no placeholder.
+//
+// The "1" in "CSI 1 ; 5 A" exists only so the modifier section has something to
+// attach to — "CSI ; 5 A" is not a sequence. With no section it must be
+// omitted: "CSI A" is what every terminal sends for an unmodified arrow, and
+// what a decoder is looking for.
+//
+// It was emitted unconditionally, so an unmodified arrow went out as
+// "CSI 1 A". direct-key-handler reads that back as Escape, '[', '1', 'A' —
+// four keystrokes where the user pressed one. This affects every backend that
+// encodes through here, not only the CLI one.
+func TestLetterSuffixKeysOmitThePlaceholderWhenUnmodified(t *testing.T) {
+	flags := KeyboardDisambiguate | KeyboardReportEvents
+
+	for _, c := range []struct {
+		ev   KeyEvent
+		want string
+		what string
+	}{
+		{KeyEvent{Code: KeyUp, Suffix: 'A'}, "\x1b[A", "unmodified Up"},
+		{KeyEvent{Code: KeyDown, Suffix: 'B'}, "\x1b[B", "unmodified Down"},
+		{KeyEvent{Code: 'H', Suffix: 'H'}, "\x1b[H", "unmodified Home"},
+		{KeyEvent{Code: 'P', Suffix: 'P'}, "\x1b[P", "unmodified F1"},
+
+		// With something to attach to, the placeholder comes back.
+		{KeyEvent{Code: KeyUp, Suffix: 'A', Mods: ModShift}, "\x1b[1;2A",
+			"Shift+Up: the placeholder is needed"},
+		{KeyEvent{Code: KeyUp, Suffix: 'A', EventType: KeyRelease}, "\x1b[1;1:3A",
+			"Up coming up: an event section needs it too"},
+	} {
+		got := EncodeKeyEvent(c.ev, flags)
+		if string(got) != c.want {
+			t.Errorf("%s = %q, want %q", c.what, string(got), c.want)
+		}
+	}
+}

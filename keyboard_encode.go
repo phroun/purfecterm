@@ -250,12 +250,32 @@ func csiKeyBytes(e KeyEvent, flags int) []byte {
 	}
 	letterSuffix := suffix != 'u' && suffix != '~'
 
+	// Whether a modifier/event/text section follows decides the key section
+	// too, so it is settled first.
+	mods := e.Mods + 1
+	event := e.EventType
+	needText := flags&KeyboardReportText != 0 && e.Text != "" && event != KeyRelease
+	needEvent := event != KeyPress && flags&KeyboardReportEvents != 0
+	needSection := mods > 1 || needEvent || needText
+
 	keyPart := strconv.Itoa(int(code))
 	if letterSuffix {
-		keyPart = "1" // the placeholder a modified arrow or Home/End uses
+		// A letter-suffix key has no number of its own. The "1" is a
+		// placeholder that exists only so a following section has something to
+		// attach to — "CSI ; 5 A" is not a sequence, "CSI 1 ; 5 A" is.
+		//
+		// With no section it must be omitted. "CSI A" is what every terminal
+		// sends for an unmodified arrow and what a decoder is looking for;
+		// "CSI 1 A" was emitted here unconditionally, and
+		// direct-key-handler reads it back as Escape, '[', '1', 'A' — four
+		// keystrokes instead of one arrow.
+		keyPart = ""
+		if needSection {
+			keyPart = "1"
+		}
 	}
 
-	if flags&KeyboardReportAlternates != 0 {
+	if flags&KeyboardReportAlternates != 0 && !letterSuffix {
 		alt := ""
 		if e.Shifted != 0 && e.Shifted != code {
 			alt = ":" + strconv.Itoa(int(e.Shifted))
@@ -272,11 +292,7 @@ func csiKeyBytes(e KeyEvent, flags int) []byte {
 
 	// The modifier section, present when there is a modifier, a non-press
 	// event, or text still to come.
-	mods := e.Mods + 1
-	event := e.EventType
-	needText := flags&KeyboardReportText != 0 && e.Text != "" && event != KeyRelease
-	needEvent := event != KeyPress && flags&KeyboardReportEvents != 0
-	if mods > 1 || needEvent || needText {
+	if needSection {
 		b.WriteString(";")
 		b.WriteString(strconv.Itoa(mods))
 		if needEvent {
