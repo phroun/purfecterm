@@ -32,6 +32,43 @@ const (
 	ModNumLock
 )
 
+// ModAll is every modifier bit this package defines. A stray bit outside it
+// would be encoded verbatim into the CSI parameter — the wire value is the bits
+// plus one — so an override is masked to this before it is applied.
+const ModAll = ModShift | ModMega | ModCtrl | ModSuper | ModHyper | ModMicro |
+	ModCapsLock | ModNumLock
+
+// ModifierOverride adjusts the modifier bits a windowing backend derived, for
+// modifiers that backend cannot see for itself.
+//
+// The answer is not purfecterm's to give. Hyper has no bit in GTK or Qt at all,
+// and mew synthesizes it from a doubled Ctrl or Alt — which is a choice about
+// one keyboard convention, not a fact about terminals. Which physical key even
+// IS Hyper varies by platform and by what the user's keymap binds. An embedder
+// has the platform event stream and knows its own conventions, so this hands
+// them the decision instead of guessing on their behalf.
+//
+// Clear is applied BEFORE Set, so a bit named in both ends up set. The zero
+// value changes nothing, deliberately: a "keep these" mask would let a
+// forgotten field silently erase every modifier, and that reads at the far end
+// as Ctrl having stopped working rather than as a mistake in the hook.
+//
+// Only the kitty keyboard protocol carries these. Hyper, Micro and Glyph have
+// no legacy encoding at all — no ESC prefix, no control code — so against a
+// guest that never negotiated the protocol an override adds nothing. Clearing a
+// legacy-expressible modifier does not reach the legacy path either, which
+// builds its sequences from its own booleans rather than from this mask.
+type ModifierOverride struct {
+	Set   int // bits to add
+	Clear int // bits to remove, applied first
+}
+
+// ApplyModifierOverride folds an override into a modifier set, ignoring any
+// bits that are not modifiers.
+func ApplyModifierOverride(mods int, o ModifierOverride) int {
+	return (mods&^(o.Clear&ModAll) | o.Set&ModAll) & ModAll
+}
+
 // Functional key codes the protocol assigns from the Unicode private use area.
 // These are the ones with no sensible codepoint of their own.
 const (

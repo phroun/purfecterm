@@ -193,6 +193,10 @@ type Widget struct {
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
+	// modifierOverride lets the embedder supply modifiers this backend cannot
+	// see (see SetModifierOverride).
+	modifierOverride func() purfecterm.ModifierOverride
+
 	// Callback when terminal resizes (for notifying PTY)
 	onResize func(cols, rows int)
 
@@ -2388,7 +2392,7 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	// would corrupt the modifier value on every keystroke rather than leave one
 	// rarely-used report absent.
 	if data := w.encodeKittyKey(qt.Key(key), event.Text(),
-		kittyMods(hasShift, hasCtrl, hasMega, hasSuper, false, false),
+		w.modifierOverrides(kittyMods(hasShift, hasCtrl, hasMega, hasSuper, false, false)),
 		eventType); data != nil {
 		onInput(data)
 		return
@@ -3509,4 +3513,35 @@ func (w *Widget) SelectAll() {
 // SetCursorVisible shows or hides the cursor
 func (w *Widget) SetCursorVisible(visible bool) {
 	w.buffer.SetCursorVisible(visible)
+}
+
+// SetModifierOverride installs a hook consulted on every key event, letting the
+// embedder add or remove modifier bits this backend cannot derive for itself.
+//
+// Qt reports no Hyper and no Micro either, and which physical key even IS Hyper is a
+// property of the platform and the user's keymap rather than of terminals — mew
+// synthesizes it from a doubled Ctrl or Alt, which is one convention among
+// several. Whoever embeds this widget has the platform event stream and their
+// own conventions, so the decision belongs to them.
+//
+// The hook is PULLED at encode time rather than pushed on transitions: nothing
+// is stored here, so a key release missed during a focus change cannot leave a
+// modifier stuck on. Return the zero value to change nothing. See
+// purfecterm.ModifierOverride, and note that only a guest which negotiated the
+// kitty keyboard protocol can receive these.
+func (w *Widget) SetModifierOverride(fn func() purfecterm.ModifierOverride) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.modifierOverride = fn
+}
+
+// modifierOverrides folds the hook's answer into a derived modifier set.
+func (w *Widget) modifierOverrides(mods int) int {
+	w.mu.Lock()
+	fn := w.modifierOverride
+	w.mu.Unlock()
+	if fn == nil {
+		return mods
+	}
+	return purfecterm.ApplyModifierOverride(mods, fn())
 }
