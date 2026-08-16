@@ -69,13 +69,21 @@ func TestEnterKeysRoundTripAsTwoKeys(t *testing.T) {
 	}
 }
 
-// Neither key may fall through as literal text, which is what an unmapped name
-// does here — the failure that made plain Enter type the six letters "Return".
+// Neither key may take the unknown-name path, which is what an unmapped name
+// does here — the failure that made plain Return send its own six letters.
+//
+// The keys are named through direct-key-handler's constants rather than as
+// literals, so this asks the question the regression actually posed: does this
+// encoder have bytes for the key upstream calls KeyReturn, whatever upstream
+// spells it today? Written as "Return" the test would go green again the next
+// time the word moves to another key.
 func TestEnterKeysAreMappedNotTyped(t *testing.T) {
-	for _, k := range []string{"Return", "Enter"} {
-		if got := string(keyToBytes(k)); got == k {
-			t.Errorf("%q encoded to its own name; it is unmapped and would be "+
-				"typed at the guest as text", k)
+	for _, k := range []keyboard.Key{keyboard.KeyReturn, keyboard.KeyKeypadEnter} {
+		name := k.DefaultName()
+		if got := keyToBytes(name); bytes.Equal(got, unknownKeyBytes(name)) {
+			t.Errorf("%v (emits %q) is unmapped: it encodes to %q, the unknown-key "+
+				"form, instead of the bytes a terminal sends for it",
+				k, name, string(got))
 		}
 	}
 }
@@ -85,9 +93,9 @@ func TestEnterKeysAreMappedNotTyped(t *testing.T) {
 // which reads as the terminal lacking the chord rather than as a bug.
 func TestModifiedEnterKeysStaySplitAndAudible(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
-		{"M-Return", "\x1b\r", "Alt + home-row key"},
+		{"M-Return", "\x1b\r", "Mega + home-row key"},
 		{"C-Return", "\r", "Ctrl + home-row key"},
-		{"M-Enter", "\x1b\x1bOM", "Alt + keypad key"},
+		{"M-Enter", "\x1b\x1bOM", "Mega + keypad key"},
 		{"C-Enter", "\x1bOM", "Ctrl + keypad key"},
 	} {
 		got := keyToBytes(c.key)
@@ -103,6 +111,6 @@ func TestModifiedEnterKeysStaySplitAndAudible(t *testing.T) {
 
 	// The modified pairs stay distinct too.
 	if bytes.Equal(keyToBytes("M-Return"), keyToBytes("M-Enter")) {
-		t.Error("Alt on the two Enter keys encodes identically")
+		t.Error("Mega on the two Enter keys encodes identically")
 	}
 }

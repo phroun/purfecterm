@@ -413,6 +413,10 @@ type Widget struct {
 	// Callback when data should be written to PTY
 	onInput func([]byte)
 
+	// modifierOverride lets the embedder supply modifiers this backend cannot
+	// see (see SetModifierOverride).
+	modifierOverride func() purfecterm.ModifierOverride
+
 	// Callback when terminal size changes (for PTY notification)
 	onResize func(cols, rows int)
 
@@ -2622,7 +2626,7 @@ func gdkMouseModifiers(state uint) int {
 		mods |= purfecterm.MouseModShift
 	}
 	if state&uint(gdk.MOD1_MASK) != 0 {
-		mods |= purfecterm.MouseModAlt
+		mods |= purfecterm.MouseModMega
 	}
 	if state&uint(gdk.CONTROL_MASK) != 0 {
 		mods |= purfecterm.MouseModControl
@@ -3065,9 +3069,12 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	// Extract modifier states (cast ModifierType to uint for bitwise ops)
 	hasShift := state&uint(gdk.SHIFT_MASK) != 0
 	hasCtrl := state&uint(gdk.CONTROL_MASK) != 0
-	hasAlt := state&uint(gdk.MOD1_MASK) != 0  // Alt key
-	hasMeta := state&uint(gdk.META_MASK) != 0 // Meta/Command key
-	hasSuper := state&uint(gdk.SUPER_MASK) != 0
+	// GDK reports all three separately, so each is its own key here. MOD1 is
+	// the cap marked Alt or Option, which is Mega. META_MASK is X11's Meta,
+	// which is Micro — NOT Command; Command arrives as SUPER_MASK.
+	hasMega := state&uint(gdk.MOD1_MASK) != 0   // Alt / Option cap
+	hasMicro := state&uint(gdk.META_MASK) != 0  // X11 Meta key
+	hasSuper := state&uint(gdk.SUPER_MASK) != 0 // Command / System flag key
 
 	// Ignore modifier-only key presses (they don't produce terminal output)
 	if isModifierKey(keyval) {
@@ -3083,25 +3090,25 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 
 	// Special Tab handling for focus navigation:
 	// - Ctrl+Tab (with or without Shift) → let GTK handle focus navigation
-	// - Shift+Tab (without Ctrl/Alt/Meta) → let GTK handle focus navigation
-	// - Plain Tab or Tab+Alt/Meta → send to terminal
+	// - Shift+Tab (without Ctrl/Mega/Micro) → let GTK handle focus navigation
+	// - Plain Tab or Tab+Mega/Micro → send to terminal
 	if keyval == gdk.KEY_Tab || keyval == gdk.KEY_ISO_Left_Tab {
 		if hasCtrl {
 			// Ctrl+Tab or Ctrl+Shift+Tab: let GTK handle focus navigation
 			return false
 		}
-		if (hasShift || keyval == gdk.KEY_ISO_Left_Tab) && !hasAlt && !hasMeta && !hasSuper {
+		if (hasShift || keyval == gdk.KEY_ISO_Left_Tab) && !hasMega && !hasMicro && !hasSuper {
 			// Shift+Tab alone: let GTK handle focus navigation (previous widget)
 			return false
 		}
-		// Plain Tab or Tab with Alt/Meta/Super: continue to send to terminal
+		// Plain Tab or Tab with Mega/Micro/Super: continue to send to terminal
 	}
 
 	// Handle clipboard copy (Ctrl+C with selection only)
 	// Note: Ctrl+V paste is NOT handled here - use PasteClipboard() via context menu
 	// Note: Ctrl+A is NOT handled here - it passes through to the terminal
 	// for programs that use it (e.g., readline beginning-of-line)
-	if hasCtrl && !hasAlt && !hasMeta {
+	if hasCtrl && !hasMega && !hasMicro {
 		switch keyval {
 		case gdk.KEY_c, gdk.KEY_C:
 			if w.buffer.HasSelection() {
@@ -3124,8 +3131,8 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	// application that never asked sees byte-for-byte what it always did and
 	// the legacy switch below stays the only path in play.
 	if data := w.encodeKittyKey(keyval,
-		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, hasSuper,
-			state&uint(gdk.LOCK_MASK) != 0, state&uint(gdk.MOD2_MASK) != 0),
+		w.modifierOverrides(kittyMods(hasShift, hasCtrl, hasMega, hasMicro, hasSuper,
+			state&uint(gdk.LOCK_MASK) != 0, state&uint(gdk.MOD2_MASK) != 0)),
 		purfecterm.KeyPress); data != nil {
 		onInput(data)
 		return true
@@ -3137,13 +3144,13 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	if hasShift {
 		mod += 1
 	}
-	if hasAlt {
+	if hasMega {
 		mod += 2
 	}
 	if hasCtrl {
 		mod += 4
 	}
-	if hasMeta || hasSuper {
+	if hasMicro || hasSuper {
 		mod += 8
 	}
 	hasModifiers := mod > 1
@@ -3161,15 +3168,15 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	case gdk.KEY_BackSpace:
 		if hasCtrl {
 			data = []byte{0x08} // Ctrl+Backspace = BS
-		} else if hasAlt {
-			data = []byte{0x1b, 0x7f} // Alt+Backspace = ESC DEL
+		} else if hasMega {
+			data = []byte{0x1b, 0x7f} // Mega+Backspace = ESC DEL
 		} else {
 			data = []byte{0x7f}
 		}
 	case gdk.KEY_Tab, gdk.KEY_ISO_Left_Tab:
 		// Note: Ctrl+Tab and Shift+Tab (alone) are handled earlier for focus navigation
-		// Only reach here for plain Tab or Tab with Alt/Meta/Super
-		if hasAlt || hasMeta || hasSuper {
+		// Only reach here for plain Tab or Tab with Mega/Micro/Super
+		if hasMega || hasMicro || hasSuper {
 			// Tab with modifier sends modified Tab sequence
 			data = modifiedSpecialKey(mod, 9, 0) // CSI 9 ; mod u (kitty protocol)
 		} else {
@@ -3184,7 +3191,7 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 	case gdk.KEY_space:
 		// Ctrl+Space produces NUL (^@) - traditional behavior
 		// Other modifier combinations use kitty protocol
-		if hasCtrl && !hasShift && !hasAlt && !hasMeta && !hasSuper {
+		if hasCtrl && !hasShift && !hasMega && !hasMicro && !hasSuper {
 			data = []byte{0x00} // NUL / ^@
 		} else if hasModifiers {
 			data = modifiedSpecialKey(mod, 32, 0) // CSI 32 ; mod u (kitty protocol)
@@ -3268,7 +3275,7 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 
 	default:
 		// Regular character handling
-		data = w.handleRegularKey(keyval, key, hasShift, hasCtrl, hasAlt, hasMeta, hasSuper)
+		data = w.handleRegularKey(keyval, key, hasShift, hasCtrl, hasMega, hasMicro, hasSuper)
 	}
 
 	// Final fallback: check hardware keycodes for special keys (Wine/Windows)
@@ -3279,7 +3286,7 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 		// If still no data, try regular character from hardware keycode
 		if len(data) == 0 {
 			if ch := hardwareKeycodeToChar(hwcode, hasShift); ch != 0 {
-				data = w.processCharWithModifiers(ch, hasShift, hasCtrl, hasAlt, hasMeta, hasSuper)
+				data = w.processCharWithModifiers(ch, hasShift, hasCtrl, hasMega, hasMicro, hasSuper)
 			}
 		}
 	}
@@ -3295,17 +3302,17 @@ func (w *Widget) onKeyPress(da *gtk.DrawingArea, ev *gdk.Event) bool {
 }
 
 // handleRegularKey processes regular character keys with modifiers
-func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasCtrl, hasAlt, hasMeta, hasSuper bool) []byte {
+func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasCtrl, hasMega, hasMicro, hasSuper bool) []byte {
 	// Check if we should use kitty protocol for multi-modifier keys.
 	// We preserve traditional handling for:
 	// - Plain key → character
 	// - Shift+key → shifted character
 	// - Ctrl+letter → control character (^A, ^B, etc.)
-	// - Alt+key → ESC + character
+	// - Mega+key → ESC + character
 	// But use kitty protocol for:
-	// - Combinations like Ctrl+Shift, Ctrl+Alt, Meta+anything
+	// - Combinations like Ctrl+Shift, Ctrl+Mega, Micro+anything
 	// - Ctrl+symbol (symbols have no traditional control character)
-	useKittyMultiMod := hasMeta || hasSuper || (hasCtrl && hasShift) || (hasCtrl && hasAlt) || (hasAlt && hasShift)
+	useKittyMultiMod := hasMicro || hasSuper || (hasCtrl && hasShift) || (hasCtrl && hasMega) || (hasMega && hasShift)
 
 	// Helper to get base character
 	getBaseChar := func() byte {
@@ -3338,21 +3345,21 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 		if hasShift {
 			mod += 1
 		}
-		if hasAlt {
+		if hasMega {
 			mod += 2
 		}
 		if hasCtrl {
 			mod += 4
 		}
-		if hasMeta || hasSuper {
+		if hasMicro || hasSuper {
 			mod += 8
 		}
 		return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 	}
 
-	// For symbol/number keys with Ctrl or Alt (even without other modifiers), use kitty protocol
+	// For symbol/number keys with Ctrl or Mega (even without other modifiers), use kitty protocol
 	// because symbols and numbers don't have traditional control characters like letters do
-	if hasCtrl || hasAlt {
+	if hasCtrl || hasMega {
 		// First try direct keyval matching for symbols
 		if baseChar, ok := isSymbolKeyvalGtk(keyval); ok {
 			return sendKitty(baseChar)
@@ -3360,7 +3367,7 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 		// Try number keys
 		if baseChar, ok := isNumberKeyvalGtk(keyval); ok {
 			// For plain Ctrl+number (no other modifiers), use historic quirky behavior
-			if hasCtrl && !hasShift && !hasAlt && !hasMeta && !hasSuper {
+			if hasCtrl && !hasShift && !hasMega && !hasMicro && !hasSuper {
 				switch baseChar {
 				case '2':
 					return []byte{0x00} // Ctrl+2 = ^@ (NUL)
@@ -3404,8 +3411,8 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 	var isChar bool
 
 	// On macOS, Option key composes special Unicode characters (e.g., Option+R = ®)
-	// We want to treat Option as Alt/Meta modifier instead, using the base key
-	if runtime.GOOS == "darwin" && hasAlt {
+	// We want to treat the Option cap as Mega instead, using the base key
+	if runtime.GOOS == "darwin" && hasMega {
 		hwcode := key.HardwareKeyCode()
 		if baseCh := macKeycodeToChar(hwcode, hasShift); baseCh != 0 {
 			// Apply Ctrl transformation if needed (convert letter to control char)
@@ -3440,14 +3447,14 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 				if hasShift {
 					mod += 1
 				}
-				mod += 2 // Alt (Option) is always pressed in this branch
-				if hasMeta || hasSuper {
+				mod += 2 // Mega (the Option cap) is always pressed in this branch
+				if hasMicro || hasSuper {
 					mod += 8
 				}
 				return []byte(fmt.Sprintf("\x1b[%d;%du", keycode, mod))
 			}
 
-			// Send ESC + base character for Alt+key
+			// Send ESC + base character for Mega+key
 			return []byte{0x1b, baseCh}
 		}
 	}
@@ -3462,8 +3469,8 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 			ch = byte(r)
 			isChar = true
 		} else if r != 0 {
-			// Full unicode - send as UTF-8, with ESC prefix if Alt
-			if hasAlt && !hasCtrl {
+			// Full unicode - send as UTF-8, with ESC prefix if Mega
+			if hasMega && !hasCtrl {
 				return append([]byte{0x1b}, []byte(string(r))...)
 			}
 			return []byte(string(r))
@@ -3474,11 +3481,11 @@ func (w *Widget) handleRegularKey(keyval uint, key *gdk.EventKey, hasShift, hasC
 		return nil
 	}
 
-	return w.processCharWithModifiers(ch, hasShift, hasCtrl, hasAlt, hasMeta, hasSuper)
+	return w.processCharWithModifiers(ch, hasShift, hasCtrl, hasMega, hasMicro, hasSuper)
 }
 
 // processCharWithModifiers applies modifier transformations to a character
-func (w *Widget) processCharWithModifiers(ch byte, hasShift, hasCtrl, hasAlt, hasMeta, hasSuper bool) []byte {
+func (w *Widget) processCharWithModifiers(ch byte, hasShift, hasCtrl, hasMega, hasMicro, hasSuper bool) []byte {
 	// Ctrl+letter produces control character (1-26)
 	if hasCtrl && ch >= 'a' && ch <= 'z' {
 		ch = ch - 'a' + 1
@@ -3507,8 +3514,8 @@ func (w *Widget) processCharWithModifiers(ch byte, hasShift, hasCtrl, hasAlt, ha
 	}
 
 	// Check if the control char is a "named key" that should use kitty protocol
-	// when combined with other modifiers (Alt/Meta/Super)
-	if hasAlt || hasMeta || hasSuper {
+	// when combined with other modifiers (Mega/Micro/Super)
+	if hasMega || hasMicro || hasSuper {
 		// Map control chars to their keycode for kitty protocol
 		var keycode int
 		switch ch {
@@ -3532,10 +3539,10 @@ func (w *Widget) processCharWithModifiers(ch byte, hasShift, hasCtrl, hasAlt, ha
 			if hasShift {
 				mod += 1
 			}
-			if hasAlt {
+			if hasMega {
 				mod += 2
 			}
-			if hasMeta || hasSuper {
+			if hasMicro || hasSuper {
 				mod += 8
 			}
 			return []byte(fmt.Sprintf("\x1b[%d;%du", keycode, mod))
@@ -3823,7 +3830,7 @@ func hardwareKeycodeToSpecialWithMod(hwcode uint16, mod int, hasModifiers bool) 
 	case 8: // VK_BACK
 		if hasModifiers && mod >= 5 { // Ctrl
 			return []byte{0x08}
-		} else if hasModifiers && mod >= 3 { // Alt
+		} else if hasModifiers && mod >= 3 { // Mega
 			return []byte{0x1b, 0x7f}
 		}
 		return []byte{0x7f}
@@ -4013,7 +4020,7 @@ func isNumberKeyvalGtk(keyval uint) (byte, bool) {
 
 // macKeycodeToChar converts macOS hardware keycodes to ASCII characters
 // On macOS, Option key produces composed characters (like ® for Option+R)
-// We use hardware keycodes to get the base character for Alt/Meta sequences
+// We use hardware keycodes to get the base character for Mega/Micro sequences
 func macKeycodeToChar(hwcode uint16, shift bool) byte {
 	// macOS keycode to character mapping (US keyboard layout)
 	// Letters - macOS keycodes are not sequential like Windows VK codes
@@ -4106,4 +4113,35 @@ func isModifierKeycode(hwcode uint16) bool {
 		return true
 	}
 	return false
+}
+
+// SetModifierOverride installs a hook consulted on every key event, letting the
+// embedder add or remove modifier bits this backend cannot derive for itself.
+//
+// GTK reports no Hyper (GDK has HYPER_MASK, but nothing here reads it), and which physical key even IS Hyper is a
+// property of the platform and the user's keymap rather than of terminals — mew
+// synthesizes it from a doubled Ctrl or Alt, which is one convention among
+// several. Whoever embeds this widget has the platform event stream and their
+// own conventions, so the decision belongs to them.
+//
+// The hook is PULLED at encode time rather than pushed on transitions: nothing
+// is stored here, so a key release missed during a focus change cannot leave a
+// modifier stuck on. Return the zero value to change nothing. See
+// purfecterm.ModifierOverride, and note that only a guest which negotiated the
+// kitty keyboard protocol can receive these.
+func (w *Widget) SetModifierOverride(fn func() purfecterm.ModifierOverride) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.modifierOverride = fn
+}
+
+// modifierOverrides folds the hook's answer into a derived modifier set.
+func (w *Widget) modifierOverrides(mods int) int {
+	w.mu.Lock()
+	fn := w.modifierOverride
+	w.mu.Unlock()
+	if fn == nil {
+		return mods
+	}
+	return purfecterm.ApplyModifierOverride(mods, fn())
 }

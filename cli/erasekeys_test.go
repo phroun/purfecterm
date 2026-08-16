@@ -37,22 +37,33 @@ func TestEraseKeysEncodeAsATerminalSendsThem(t *testing.T) {
 	}
 }
 
-// An unmapped name is not an error here — it falls through and is sent as its
-// own characters. That is why a rename has to reach this table in the same
-// release: "FDel" arriving before this map knew the word would have typed the
-// four letters into the guest rather than erasing anything.
-func TestUnknownKeyNameFallsThroughAsText(t *testing.T) {
-	if got := string(keyToBytes("Nonsense")); got != "Nonsense" {
-		t.Errorf("keyToBytes(%q) = %q; the fallthrough this test guards changed",
-			"Nonsense", got)
+// An unmapped name is not an error here — it still goes out — but it goes out
+// bracketed, so it cannot be mistaken for text the user typed.
+func TestUnknownKeyNameGoesOutBracketed(t *testing.T) {
+	if got := string(keyToBytes("Nonsense")); got != "<Nonsense>" {
+		t.Errorf("keyToBytes(%q) = %q, want %q", "Nonsense", got, "<Nonsense>")
+	}
+
+	// A single rune is a typed character, not a name, and must stay bare —
+	// bracketing it would put angle brackets around every non-ASCII keystroke.
+	if got := string(keyToBytes("é")); got != "é" {
+		t.Errorf("keyToBytes(%q) = %q; a typed character was treated as a key name",
+			"é", got)
+	}
+
+	// A modified chord this encoder cannot build is bracketed too. It used to
+	// return nil and send nothing, justified by nil meaning "not consumed" —
+	// but no caller reads that bool, so the chord simply vanished.
+	if got := string(keyToBytes("C-Nonsense")); got != "<C-Nonsense>" {
+		t.Errorf("keyToBytes(%q) = %q, want %q", "C-Nonsense", got, "<C-Nonsense>")
 	}
 }
 
 // Modified erase keys take the same branch, both names alike.
 func TestModifiedEraseKeys(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
-		{"M-Backspace", "\x1b\x7f", "Alt+Backspace"},
-		{"M-Delete", "\x1b\x7f", "Alt+Delete, the same key"},
+		{"M-Backspace", "\x1b\x7f", "Mega+Backspace"},
+		{"M-Delete", "\x1b\x7f", "Mega+Delete, the same key"},
 		{"C-Backspace", "\x08", "Ctrl+Backspace is where BS legitimately goes out"},
 		{"C-Delete", "\x08", "Ctrl+Delete, the same key"},
 	} {

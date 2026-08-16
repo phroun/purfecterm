@@ -23,14 +23,51 @@ const (
 // together plus one, so "no modifiers" is 1.
 const (
 	ModShift = 1 << iota
-	ModAlt
+	ModMega
 	ModCtrl
 	ModSuper
 	ModHyper
-	ModMeta
+	ModMicro
 	ModCapsLock
 	ModNumLock
 )
+
+// ModAll is every modifier bit this package defines. A stray bit outside it
+// would be encoded verbatim into the CSI parameter — the wire value is the bits
+// plus one — so an override is masked to this before it is applied.
+const ModAll = ModShift | ModMega | ModCtrl | ModSuper | ModHyper | ModMicro |
+	ModCapsLock | ModNumLock
+
+// ModifierOverride adjusts the modifier bits a windowing backend derived, for
+// modifiers that backend cannot see for itself.
+//
+// The answer is not purfecterm's to give. Hyper has no bit in GTK or Qt at all,
+// and mew synthesizes it from a doubled Ctrl or Alt — which is a choice about
+// one keyboard convention, not a fact about terminals. Which physical key even
+// IS Hyper varies by platform and by what the user's keymap binds. An embedder
+// has the platform event stream and knows its own conventions, so this hands
+// them the decision instead of guessing on their behalf.
+//
+// Clear is applied BEFORE Set, so a bit named in both ends up set. The zero
+// value changes nothing, deliberately: a "keep these" mask would let a
+// forgotten field silently erase every modifier, and that reads at the far end
+// as Ctrl having stopped working rather than as a mistake in the hook.
+//
+// Only the kitty keyboard protocol carries these. Hyper, Micro and Glyph have
+// no legacy encoding at all — no ESC prefix, no control code — so against a
+// guest that never negotiated the protocol an override adds nothing. Clearing a
+// legacy-expressible modifier does not reach the legacy path either, which
+// builds its sequences from its own booleans rather than from this mask.
+type ModifierOverride struct {
+	Set   int // bits to add
+	Clear int // bits to remove, applied first
+}
+
+// ApplyModifierOverride folds an override into a modifier set, ignoring any
+// bits that are not modifiers.
+func ApplyModifierOverride(mods int, o ModifierOverride) int {
+	return (mods&^(o.Clear&ModAll) | o.Set&ModAll) & ModAll
+}
 
 // Functional key codes the protocol assigns from the Unicode private use area.
 // These are the ones with no sensible codepoint of their own.
@@ -89,13 +126,13 @@ type KeyEvent struct {
 }
 
 // legacyEncodable reports whether a key HAS an old-style encoding at all. Ctrl
-// and Alt do (a C0 control, an ESC prefix); Super, Hyper and Meta do not, so a
+// and Mega do (a C0 control, an ESC prefix); Super, Hyper and Micro do not, so a
 // key carrying one of those has to go out as CSI whatever the flags say.
 func (e KeyEvent) legacyEncodable() bool {
 	if e.Suffix != 'u' && e.Suffix != 0 {
 		return false // a functional key already has its own sequence
 	}
-	return e.Mods&(ModSuper|ModHyper|ModMeta) == 0
+	return e.Mods&(ModSuper|ModHyper|ModMicro) == 0
 }
 
 // EncodeKeyEvent renders a key event for the given enhancement flags, returning
@@ -138,7 +175,7 @@ func mustUseCSI(e KeyEvent, flags int) bool {
 	// Esc/Tab/Enter/Backspace ARE the C0 controls that Ctrl-[ , Ctrl-I, Ctrl-M
 	// and Ctrl-H produce, so both sides of each pair have to become explicit —
 	// resolving only one half would leave them just as indistinguishable.
-	return ambiguousLegacyKey(e.Code) || e.Mods&(ModCtrl|ModAlt) != 0
+	return ambiguousLegacyKey(e.Code) || e.Mods&(ModCtrl|ModMega) != 0
 }
 
 // ambiguousLegacyKey reports whether a key's legacy encoding collides with
@@ -154,7 +191,7 @@ func ambiguousLegacyKey(code rune) bool {
 }
 
 // legacyKeyBytes renders the pre-protocol encoding: the key's own bytes, a C0
-// control under Ctrl, and an ESC prefix under Alt.
+// control under Ctrl, and an ESC prefix under Mega.
 func legacyKeyBytes(e KeyEvent) []byte {
 	code := e.Code
 	if e.Shifted != 0 && e.Mods&ModShift != 0 {
@@ -172,7 +209,7 @@ func legacyKeyBytes(e KeyEvent) []byte {
 	if out == nil {
 		out = []byte(string(code))
 	}
-	if e.Mods&ModAlt != 0 {
+	if e.Mods&ModMega != 0 {
 		out = append([]byte{0x1b}, out...)
 	}
 	return out

@@ -92,13 +92,13 @@ func kittyKeyval(keyval uint) (code rune, suffix byte, ok bool) {
 }
 
 // kittyMods packs GDK modifier state into the protocol's bits.
-func kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, hasSuper, capsLock, numLock bool) int {
+func kittyMods(hasShift, hasCtrl, hasMega, hasMicro, hasSuper, capsLock, numLock bool) int {
 	mods := 0
 	if hasShift {
 		mods |= purfecterm.ModShift
 	}
-	if hasAlt {
-		mods |= purfecterm.ModAlt
+	if hasMega {
+		mods |= purfecterm.ModMega
 	}
 	if hasCtrl {
 		mods |= purfecterm.ModCtrl
@@ -106,8 +106,8 @@ func kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, hasSuper, capsLock, numLock b
 	if hasSuper {
 		mods |= purfecterm.ModSuper
 	}
-	if hasMeta {
-		mods |= purfecterm.ModMeta
+	if hasMicro {
+		mods |= purfecterm.ModMicro
 	}
 	if capsLock {
 		mods |= purfecterm.ModCapsLock
@@ -146,7 +146,7 @@ func (w *Widget) encodeKittyKey(keyval uint, mods int, eventType int) []byte {
 		if mods&purfecterm.ModShift != 0 && ev.Shifted != 0 {
 			text = ev.Shifted
 		}
-		if mods&(purfecterm.ModCtrl|purfecterm.ModAlt|purfecterm.ModSuper) == 0 {
+		if mods&(purfecterm.ModCtrl|purfecterm.ModMega|purfecterm.ModSuper) == 0 {
 			ev.Text = string(text)
 		}
 	}

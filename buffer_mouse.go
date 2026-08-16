@@ -12,7 +12,7 @@ const (
 
 	// Modifier flags (added to button value)
 	MouseModShift   = 4
-	MouseModAlt     = 8
+	MouseModMega    = 8
 	MouseModControl = 16
 
 	// Motion flag (added to button value for motion events)
