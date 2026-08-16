@@ -385,7 +385,9 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 		w.widget.FocusPreviousChild()
 	})
 
-	// Alt+Tab and Meta+Tab (with optional Shift) send modified Tab sequences to terminal
+	// Mega+Tab and Super+Tab (with optional Shift) send modified Tab sequences to
+	// the terminal. The strings are Qt's own key-sequence spelling, which is why
+	// they still read Alt and Meta: Qt parses them, we do not.
 	altTabShortcut := qt.NewQShortcut2(qt.NewQKeySequence2("Alt+Tab"), w.widget)
 	altTabShortcut.SetContext(qt.WidgetWithChildrenShortcut)
 	altTabShortcut.OnActivated(func() {
@@ -394,7 +396,7 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 		w.mu.Unlock()
 		if onInput != nil {
 			w.buffer.NotifyKeyboardActivity()
-			// Alt+Tab = mod 3 (1 + 2 for alt)
+			// Mega+Tab = mod 3 (1 + 2 for Mega)
 			onInput([]byte{0x1b, '[', '9', ';', '3', 'u'}) // CSI 9 ; 3 u
 		}
 	})
@@ -407,7 +409,7 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 		w.mu.Unlock()
 		if onInput != nil {
 			w.buffer.NotifyKeyboardActivity()
-			// Shift+Alt+Tab = mod 4 (1 + 1 for shift + 2 for alt)
+			// Shift+Mega+Tab = mod 4 (1 + 1 for Shift + 2 for Mega)
 			onInput([]byte{0x1b, '[', '9', ';', '4', 'u'}) // CSI 9 ; 4 u
 		}
 	})
@@ -420,7 +422,7 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 		w.mu.Unlock()
 		if onInput != nil {
 			w.buffer.NotifyKeyboardActivity()
-			// Meta+Tab = mod 9 (1 + 8 for meta)
+			// Super+Tab = mod 9 (1 + 8 for Super)
 			onInput([]byte{0x1b, '[', '9', ';', '9', 'u'}) // CSI 9 ; 9 u
 		}
 	})
@@ -433,7 +435,7 @@ func NewWidget(cols, rows, scrollbackSize int) *Widget {
 		w.mu.Unlock()
 		if onInput != nil {
 			w.buffer.NotifyKeyboardActivity()
-			// Shift+Meta+Tab = mod 10 (1 + 1 for shift + 8 for meta)
+			// Shift+Super+Tab = mod 10 (1 + 1 for Shift + 8 for Super)
 			onInput([]byte{0x1b, '[', '9', ';', '1', '0', 'u'}) // CSI 9 ; 10 u
 		}
 	})
@@ -2330,7 +2332,7 @@ func (w *Widget) screenToCell(screenX, screenY int) (cellX, cellY int) {
 
 func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEvent) {
 	// Note: Tab, Ctrl+Tab, Shift+Tab, Shift+Ctrl+Tab are handled by QShortcuts
-	// in NewWidget(), so they don't reach here. Only Alt+Tab or Meta+Tab might
+	// in NewWidget(), so they don't reach here. Only Mega+Tab or Super+Tab might
 	// reach this handler for modified Tab sequences.
 
 	// Accept all key events immediately to prevent them from propagating to
@@ -2356,15 +2358,20 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 
 	hasShift := modifiers&qt.ShiftModifier != 0
 	hasCtrl := modifiers&qt.ControlModifier != 0
-	hasAlt := modifiers&qt.AltModifier != 0
-	hasMeta := modifiers&qt.MetaModifier != 0
+	hasMega := modifiers&qt.AltModifier != 0
+	hasSuper := modifiers&qt.MetaModifier != 0
 
-	// On macOS, Qt swaps Control and Meta modifiers:
-	// - Qt ControlModifier = Command key (⌘)
-	// - Qt MetaModifier = Control key (^)
-	// We want hasCtrl to mean the physical Ctrl key and hasMeta to mean Command
+	// Qt's MetaModifier is the Command / Windows key, which is Super here. Qt
+	// inherits the name from X11, where that key usually lands on Mod4 — and it
+	// is a DIFFERENT key from the one GDK's META_MASK reports, which is Micro
+	// and which Qt cannot see at all. Qt's whole enum is Shift, Control, Alt,
+	// Meta, Keypad and GroupSwitch: there is no Micro and no Hyper in it.
+	//
+	// On macOS Qt swaps two of them — ControlModifier arrives for ⌘ and
+	// MetaModifier for the physical ⌃ — so undoing the swap leaves hasCtrl
+	// meaning the Control key and hasSuper meaning ⌘.
 	if runtime.GOOS == "darwin" {
-		hasCtrl, hasMeta = hasMeta, hasCtrl
+		hasCtrl, hasSuper = hasSuper, hasCtrl
 	}
 
 	// The kitty keyboard protocol takes precedence when an application has
@@ -2381,19 +2388,19 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	// would corrupt the modifier value on every keystroke rather than leave one
 	// rarely-used report absent.
 	if data := w.encodeKittyKey(qt.Key(key), event.Text(),
-		kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, false, false),
+		kittyMods(hasShift, hasCtrl, hasMega, hasSuper, false, false),
 		eventType); data != nil {
 		onInput(data)
 		return
 	}
 
 	var data []byte
-	hasModifiers := hasShift || hasCtrl || hasAlt || hasMeta
+	hasModifiers := hasShift || hasCtrl || hasMega || hasSuper
 
 	switch qt.Key(key) {
 	case qt.Key_Return, qt.Key_Enter:
 		if hasModifiers {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			data = []byte(fmt.Sprintf("\x1b[13;%du", mod)) // CSI 13 ; mod u (kitty protocol)
 		} else {
 			data = []byte{'\r'}
@@ -2401,21 +2408,21 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	case qt.Key_Backspace:
 		if hasCtrl {
 			data = []byte{0x08}
-		} else if hasAlt {
+		} else if hasMega {
 			data = []byte{0x1b, 0x7f}
 		} else {
 			data = []byte{0x7f}
 		}
 	case qt.Key_Tab, qt.Key_Backtab:
-		// Only Alt+Tab or Meta+Tab reach here (others handled by shortcuts)
-		if hasAlt || hasMeta {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+		// Only Mega+Tab or Super+Tab reach here (others handled by shortcuts)
+		if hasMega || hasSuper {
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			data = []byte(fmt.Sprintf("\x1b[9;%du", mod)) // CSI 9 ; mod u (kitty protocol)
 		}
 		// Plain Tab and Ctrl/Shift+Tab are handled by shortcuts, shouldn't reach here
 	case qt.Key_Escape:
 		if hasModifiers {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			data = []byte(fmt.Sprintf("\x1b[27;%du", mod)) // CSI 27 ; mod u (kitty protocol)
 		} else {
 			data = []byte{0x1b}
@@ -2423,61 +2430,61 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	case qt.Key_Space:
 		// Ctrl+Space produces NUL (^@) - traditional behavior
 		// Other modifier combinations use kitty protocol
-		if hasCtrl && !hasShift && !hasAlt && !hasMeta {
+		if hasCtrl && !hasShift && !hasMega && !hasSuper {
 			data = []byte{0x00} // NUL / ^@
 		} else if hasModifiers {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			data = []byte(fmt.Sprintf("\x1b[32;%du", mod)) // CSI 32 ; mod u (kitty protocol)
 		} else {
 			data = []byte{' '}
 		}
 	case qt.Key_Up:
-		data = w.cursorKey('A', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('A', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Down:
-		data = w.cursorKey('B', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('B', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Right:
-		data = w.cursorKey('C', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('C', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Left:
-		data = w.cursorKey('D', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('D', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Home:
-		data = w.cursorKey('H', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('H', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_End:
-		data = w.cursorKey('F', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.cursorKey('F', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_PageUp:
-		data = w.tildeKey(5, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(5, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_PageDown:
-		data = w.tildeKey(6, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(6, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Insert:
-		data = w.tildeKey(2, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(2, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_Delete:
-		data = w.tildeKey(3, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(3, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F1:
-		data = w.functionKey('P', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.functionKey('P', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F2:
-		data = w.functionKey('Q', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.functionKey('Q', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F3:
-		data = w.functionKey('R', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.functionKey('R', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F4:
-		data = w.functionKey('S', hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.functionKey('S', hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F5:
-		data = w.tildeKey(15, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(15, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F6:
-		data = w.tildeKey(17, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(17, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F7:
-		data = w.tildeKey(18, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(18, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F8:
-		data = w.tildeKey(19, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(19, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F9:
-		data = w.tildeKey(20, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(20, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F10:
-		data = w.tildeKey(21, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(21, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F11:
-		data = w.tildeKey(23, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(23, hasShift, hasCtrl, hasMega, hasSuper)
 	case qt.Key_F12:
-		data = w.tildeKey(24, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.tildeKey(24, hasShift, hasCtrl, hasMega, hasSuper)
 	default:
 		// Regular character handling
-		data = w.handleRegularKey(event, hasShift, hasCtrl, hasAlt, hasMeta)
+		data = w.handleRegularKey(event, hasShift, hasCtrl, hasMega, hasSuper)
 	}
 
 	if len(data) > 0 {
@@ -2487,59 +2494,59 @@ func (w *Widget) keyPressEvent(super func(event *qt.QKeyEvent), event *qt.QKeyEv
 	}
 }
 
-func (w *Widget) cursorKey(key byte, hasShift, hasCtrl, hasAlt, hasMeta bool) []byte {
-	mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+func (w *Widget) cursorKey(key byte, hasShift, hasCtrl, hasMega, hasSuper bool) []byte {
+	mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 	if mod > 1 {
 		return []byte(fmt.Sprintf("\x1b[1;%d%c", mod, key))
 	}
 	return []byte{0x1b, '[', key}
 }
 
-func (w *Widget) tildeKey(num int, hasShift, hasCtrl, hasAlt, hasMeta bool) []byte {
-	mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+func (w *Widget) tildeKey(num int, hasShift, hasCtrl, hasMega, hasSuper bool) []byte {
+	mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 	if mod > 1 {
 		return []byte(fmt.Sprintf("\x1b[%d;%d~", num, mod))
 	}
 	return []byte(fmt.Sprintf("\x1b[%d~", num))
 }
 
-func (w *Widget) functionKey(key byte, hasShift, hasCtrl, hasAlt, hasMeta bool) []byte {
-	mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+func (w *Widget) functionKey(key byte, hasShift, hasCtrl, hasMega, hasSuper bool) []byte {
+	mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 	if mod > 1 {
 		return []byte(fmt.Sprintf("\x1b[1;%d%c", mod, key))
 	}
 	return []byte{0x1b, 'O', key}
 }
 
-func (w *Widget) calcMod(hasShift, hasCtrl, hasAlt, hasMeta bool) int {
+func (w *Widget) calcMod(hasShift, hasCtrl, hasMega, hasSuper bool) int {
 	mod := 1
 	if hasShift {
 		mod += 1
 	}
-	if hasAlt {
+	if hasMega {
 		mod += 2
 	}
 	if hasCtrl {
 		mod += 4
 	}
-	if hasMeta {
+	if hasSuper {
 		mod += 8
 	}
 	return mod
 }
 
 // handleRegularKey processes regular character keys with modifiers
-func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt, hasMeta bool) []byte {
+func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasMega, hasSuper bool) []byte {
 	// Check if we should use kitty protocol for multi-modifier keys.
 	// We preserve traditional handling for:
 	// - Plain key → character
 	// - Shift+key → shifted character
 	// - Ctrl+letter → control character (^A, ^B, etc.)
-	// - Alt+key → ESC + character
+	// - Mega+key → ESC + character
 	// But use kitty protocol for:
-	// - Combinations like Ctrl+Shift, Ctrl+Alt, Meta+anything
+	// - Combinations like Ctrl+Shift, Ctrl+Mega, Super+anything
 	// - Ctrl+symbol (symbols have no traditional control character)
-	useKittyMultiMod := hasMeta || (hasCtrl && hasShift) || (hasCtrl && hasAlt) || (hasAlt && hasShift)
+	useKittyMultiMod := hasSuper || (hasCtrl && hasShift) || (hasCtrl && hasMega) || (hasMega && hasShift)
 
 	// Helper to get base character
 	getBaseChar := func() byte {
@@ -2568,18 +2575,18 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 		return baseChar
 	}
 
-	// For symbol keys with Ctrl or Alt (even without other modifiers), use kitty protocol
+	// For symbol keys with Ctrl or Mega (even without other modifiers), use kitty protocol
 	// because symbols don't have traditional control characters like letters do
-	if hasCtrl || hasAlt {
+	if hasCtrl || hasMega {
 		// First try Qt key code matching for symbols
 		if baseChar, ok := isSymbolQtKey(qt.Key(event.Key())); ok {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 		}
 		// Try number keys
 		if baseChar, ok := isNumberQtKey(qt.Key(event.Key())); ok {
 			// For plain Ctrl+number (no other modifiers), use historic quirky behavior
-			if hasCtrl && !hasShift && !hasAlt && !hasMeta {
+			if hasCtrl && !hasShift && !hasMega && !hasSuper {
 				switch baseChar {
 				case '2':
 					return []byte{0x00} // Ctrl+2 = ^@ (NUL)
@@ -2598,13 +2605,13 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 				}
 			}
 			// Other modifier combinations use kitty protocol
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 		}
 		// Fallback to getBaseChar for symbols
 		baseChar := getBaseChar()
 		if isSymbolKeyQt(baseChar) {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 		}
 	}
@@ -2613,12 +2620,12 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 		baseChar := getBaseChar()
 		// Check for alphabet keys
 		if baseChar >= 'a' && baseChar <= 'z' {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 		}
 		// Check for symbol keys (already handled above for Ctrl-only, but needed for other multi-mod)
 		if isSymbolKeyQt(baseChar) {
-			mod := w.calcMod(hasShift, hasCtrl, hasAlt, hasMeta)
+			mod := w.calcMod(hasShift, hasCtrl, hasMega, hasSuper)
 			return []byte(fmt.Sprintf("\x1b[%d;%du", int(baseChar), mod))
 		}
 	}
@@ -2627,7 +2634,7 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 	// because Qt's event.Text() may return empty or composed characters.
 	// NativeVirtualKey() returns the macOS keycode, while NativeScanCode() returns
 	// the USB HID usage code which is different.
-	if runtime.GOOS == "darwin" && (hasAlt || hasCtrl) {
+	if runtime.GOOS == "darwin" && (hasMega || hasCtrl) {
 		hwcode := uint32(event.NativeVirtualKey())
 		if baseCh := macKeycodeToChar(hwcode, hasShift); baseCh != 0 {
 			// Apply Ctrl transformation if needed (convert letter to control char)
@@ -2670,21 +2677,21 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 				keycode = 27
 			}
 
-			if keycode != 0 && hasAlt {
-				// Use kitty protocol for Alt+control_char: CSI keycode ; mod u
+			if keycode != 0 && hasMega {
+				// Use kitty protocol for Mega+control_char: CSI keycode ; mod u
 				mod := 1
 				if hasShift {
 					mod += 1
 				}
-				mod += 2 // Alt (Option) is always pressed in this branch
-				if hasMeta {
+				mod += 2 // Mega (the Option cap) is always pressed in this branch
+				if hasSuper {
 					mod += 8
 				}
 				return []byte(fmt.Sprintf("\x1b[%d;%du", keycode, mod))
 			}
 
 			// Send the character (possibly transformed by Ctrl)
-			if hasAlt {
+			if hasMega {
 				return []byte{0x1b, baseCh}
 			}
 			return []byte{baseCh}
@@ -2722,8 +2729,8 @@ func (w *Widget) handleRegularKey(event *qt.QKeyEvent, hasShift, hasCtrl, hasAlt
 		}
 	}
 
-	// Alt prefix
-	if hasAlt {
+	// Mega prefix
+	if hasMega {
 		return []byte{0x1b, ch}
 	}
 
@@ -2797,7 +2804,7 @@ func isNumberQtKey(key qt.Key) (byte, bool) {
 
 // macKeycodeToChar converts macOS hardware keycodes to ASCII characters
 // On macOS, Option key produces composed characters (like ® for Option+R)
-// We use hardware keycodes to get the base character for Alt/Meta sequences
+// We use hardware keycodes to get the base character for Mega/Super sequences
 func macKeycodeToChar(hwcode uint32, shift bool) byte {
 	// macOS keycode to character mapping (US keyboard layout)
 	// Letters - macOS keycodes are not sequential like Windows VK codes
