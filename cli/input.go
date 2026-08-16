@@ -192,6 +192,23 @@ func applyAppCursorKeys(key string, b []byte) []byte {
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.
 // Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
+	// An event-suffixed name has no legacy encoding, and gets no bytes here.
+	//
+	// This is NOT this encoder deciding that a release is not a key. The
+	// release is real and expressible — encodeKittyKeyName writes it, and a
+	// guest that negotiated KeyboardReportEvents receives it. Control only
+	// reaches this function when the kitty path declined, and the reason it
+	// declines is the protocol's own rule: an application that did not ask for
+	// event reporting is not sent event reports, because a release arriving at
+	// one that cannot read it looks like the keystroke happening twice.
+	//
+	// So the silence here is the negotiation being honoured, one layer down
+	// from where EncodeKeyEvent already enforces it. Falling through instead
+	// sent the guest "<a:Release>" as literal text on every key it let go.
+	if _, _, suffixed := splitEventSuffix(key); suffixed {
+		return nil
+	}
+
 	// Check explicit mappings first. The name is resolved to a Key and the
 	// bytes are looked up under that, so this table is indexed by whatever
 	// direct-key-handler currently calls the key rather than by a word copied
