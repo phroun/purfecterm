@@ -192,20 +192,31 @@ func applyAppCursorKeys(key string, b []byte) []byte {
 // keyToBytes converts a key name from direct-key-handler to bytes for PTY.
 // Handles all modifier combinations (S-, M-, C-) with all base keys.
 func keyToBytes(key string) []byte {
-	// An event-suffixed name has no legacy encoding, and gets no bytes here.
+	// A REPEAT is a press to a guest that cannot read event types. It is one
+	// more press of the key — exactly what a legacy terminal sends for a held
+	// key, and what the guest expects — so it encodes as its base name.
+	// EncodeKeyEvent says the same on the protocol path ("a repeat is an
+	// ordinary press to a legacy app"); this is that rule on the legacy path,
+	// which used to contradict it by sending nothing, so a held key in a guest
+	// that negotiated nothing stopped dead after its first press.
 	//
-	// This is NOT this encoder deciding that a release is not a key. The
-	// release is real and expressible — encodeKittyKeyName writes it, and a
-	// guest that negotiated KeyboardReportEvents receives it. Control only
-	// reaches this function when the kitty path declined, and the reason it
-	// declines is the protocol's own rule: an application that did not ask for
-	// event reporting is not sent event reports, because a release arriving at
-	// one that cannot read it looks like the keystroke happening twice.
+	// Everything else event-suffixed gets no bytes here, and that is NOT this
+	// encoder deciding a release is not a key. The release is real and
+	// expressible — encodeKittyKeyName writes it, and a guest that negotiated
+	// KeyboardReportEvents receives it. Control only reaches this function when
+	// the kitty path declined, and the reason it declines is the protocol's own
+	// rule: an application that did not ask for event reporting is not sent
+	// event reports, because a release arriving at one that cannot read it
+	// looks like the keystroke happening twice. Unlike a repeat, a release has
+	// nothing to fall back to — there is no legacy way to say "came up".
 	//
-	// So the silence here is the negotiation being honoured, one layer down
-	// from where EncodeKeyEvent already enforces it. Falling through instead
-	// sent the guest "<a:Release>" as literal text on every key it let go.
-	if _, _, suffixed := splitEventSuffix(key); suffixed {
+	// So the silence is the negotiation being honoured, one layer down from
+	// where EncodeKeyEvent already enforces it. Falling through instead sent
+	// the guest "<a:Release>" as literal text on every key it let go.
+	if base, eventType, suffixed := splitEventSuffix(key); suffixed {
+		if eventType == purfecterm.KeyRepeat {
+			return keyToBytes(base)
+		}
 		return nil
 	}
 

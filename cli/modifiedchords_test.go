@@ -163,23 +163,38 @@ func TestNoKeyNameEncodesToNothing(t *testing.T) {
 	}
 }
 
-// An event-suffixed name sends nothing on the legacy path, because the guest
-// did not ask for events.
+// On the legacy path a REPEAT is the press it has always been, and a release is
+// nothing at all.
 //
-// This is the negotiation being honoured, not a judgement that a release is not
-// a key. The release is real and expressible: cli/keyboard_kitty.go writes it,
-// and a guest that pushed KeyboardReportEvents receives it. Control reaches
-// keyToBytes only when the kitty path declined, and the protocol's rule for
-// declining is exactly this — an application that did not ask for event
-// reports is not sent them, because a release it cannot read looks like the
-// keystroke arriving twice.
+// The two differ because a repeat has a legacy form and a release does not. A
+// held key on a terminal that never heard of this protocol arrives as another
+// press, so that is what a guest which negotiated nothing must receive —
+// sending it nothing instead makes a held key stop dead after its first press,
+// which is what this used to assert. A release has no such fallback: there is
+// no legacy way to say "came up", and one delivered to a guest that cannot read
+// it looks like the keystroke arriving twice.
 //
-// Bracketing them instead, which this file used to assert, sent the guest
+// Neither answer is a judgement that a release is not a key. The release is
+// real and expressible: cli/keyboard_kitty.go writes it, and a guest that
+// pushed KeyboardReportEvents receives it. Control reaches keyToBytes only when
+// the kitty path declined, and the protocol's rule for declining is this.
+//
+// Bracketing them, which this file asserted before that, sent the guest
 // "<a:Release>" as literal text on every key it let go.
-func TestEventSuffixesSendNothingOnTheLegacyPath(t *testing.T) {
-	for _, key := range []string{
-		"a:Release", "Return:Release", "a:Repeat", "M-a:Repeat", "S-:Left",
+func TestLegacyPathRepeatsPressesAndDropsReleases(t *testing.T) {
+	for _, tc := range []struct{ key, want string }{
+		{"a:Repeat", "a"},
+		{"M-a:Repeat", "\x1ba"},
+		{"Up:Repeat", "\x1b[A"},
+		{"Return:Repeat", "\r"},
 	} {
+		if got := string(keyToBytes(tc.key)); got != tc.want {
+			t.Errorf("%s produced %q on the legacy path, want %q — a held key must "+
+				"keep repeating for a guest that cannot read event types",
+				tc.key, got, tc.want)
+		}
+	}
+	for _, key := range []string{"a:Release", "Return:Release", "S-:Left"} {
 		if got := keyToBytes(key); got != nil {
 			t.Errorf("%s produced %q on the legacy path; a guest that negotiated "+
 				"no event reporting must receive nothing", key, string(got))
