@@ -72,11 +72,26 @@ func (h *InputHandler) handleKey(key string) bool {
 	callback := h.term.inputCallback
 	h.term.mu.Unlock()
 
-	// Convert key to bytes for the callback
-	keyBytes := keyToBytes(key)
-	// DECCKM: unmodified cursor keys use the SS3 (ESC O) form in application mode.
-	if h.term.buffer != nil && h.term.buffer.IsApplicationCursorKeys() {
-		keyBytes = applyAppCursorKeys(key, keyBytes)
+	// The kitty keyboard protocol takes precedence when the guest negotiated
+	// it, exactly as the gtk and qt backends do. Gated on the flags being
+	// non-zero, so a guest that asked for nothing sees byte-for-byte what it
+	// always did and the legacy encoder below stays the only path in play.
+	//
+	// This is the only path that can express a key RELEASE. The legacy forms
+	// have no way to say a key came up, so before this a guest that asked for
+	// release events — as a browser must, to know a held key was let go —
+	// received presses only.
+	var keyBytes []byte
+	if h.term.buffer != nil {
+		keyBytes = encodeKittyKeyName(key, h.term.buffer.KeyboardFlags())
+	}
+	if keyBytes == nil {
+		// Convert key to bytes for the callback
+		keyBytes = keyToBytes(key)
+		// DECCKM: unmodified cursor keys use the SS3 (ESC O) form in application mode.
+		if h.term.buffer != nil && h.term.buffer.IsApplicationCursorKeys() {
+			keyBytes = applyAppCursorKeys(key, keyBytes)
+		}
 	}
 	if callback != nil && len(keyBytes) > 0 {
 		if callback(keyBytes) {
