@@ -2622,7 +2622,7 @@ func gdkMouseModifiers(state uint) int {
 		mods |= purfecterm.MouseModShift
 	}
 	if state&uint(gdk.MOD1_MASK) != 0 {
-		mods |= purfecterm.MouseModAlt
+		mods |= purfecterm.MouseModMega
 	}
 	if state&uint(gdk.CONTROL_MASK) != 0 {
 		mods |= purfecterm.MouseModControl

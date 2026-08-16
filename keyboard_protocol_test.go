@@ -236,10 +236,10 @@ func TestEncodeKeyModifierNumbering(t *testing.T) {
 	}{
 		{0, "\x1b[97u"},
 		{ModShift, "\x1b[97;2u"},
-		{ModAlt, "\x1b[97;3u"},
+		{ModMega, "\x1b[97;3u"},
 		{ModCtrl, "\x1b[97;5u"},
 		{ModCtrl | ModShift, "\x1b[97;6u"},
-		{ModCtrl | ModAlt, "\x1b[97;7u"},
+		{ModCtrl | ModMega, "\x1b[97;7u"},
 		{ModSuper, "\x1b[97;9u"},
 	} {
 		got := string(EncodeKeyEvent(KeyEvent{Code: 'a', Mods: c.mods}, f))

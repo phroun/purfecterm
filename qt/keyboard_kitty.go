@@ -108,13 +108,13 @@ func kittyMods(hasShift, hasCtrl, hasAlt, hasMeta, capsLock, numLock bool) int {
 		mods |= purfecterm.ModShift
 	}
 	if hasAlt {
-		mods |= purfecterm.ModAlt
+		mods |= purfecterm.ModMega
 	}
 	if hasCtrl {
 		mods |= purfecterm.ModCtrl
 	}
 	if hasMeta {
-		mods |= purfecterm.ModMeta
+		mods |= purfecterm.ModMicro
 	}
 	if capsLock {
 		mods |= purfecterm.ModCapsLock
@@ -149,7 +149,7 @@ func (w *Widget) encodeKittyKey(key qt.Key, text string, mods int, eventType int
 	// Text is what the key would insert. Qt hands it over directly, so unlike
 	// the base code there is nothing to reconstruct — but a control combination
 	// produces a C0 byte there, which is not text the application wants.
-	if suffix == 'u' && text != "" && mods&(purfecterm.ModCtrl|purfecterm.ModAlt|purfecterm.ModMeta) == 0 {
+	if suffix == 'u' && text != "" && mods&(purfecterm.ModCtrl|purfecterm.ModMega|purfecterm.ModMicro) == 0 {
 		if r := []rune(text); len(r) > 0 && r[0] >= ' ' {
 			ev.Text = text
 		}

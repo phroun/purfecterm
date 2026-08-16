@@ -62,8 +62,8 @@ func TestUnknownKeyNameGoesOutBracketed(t *testing.T) {
 // Modified erase keys take the same branch, both names alike.
 func TestModifiedEraseKeys(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
-		{"M-Backspace", "\x1b\x7f", "Alt+Backspace"},
-		{"M-Delete", "\x1b\x7f", "Alt+Delete, the same key"},
+		{"M-Backspace", "\x1b\x7f", "Mega+Backspace"},
+		{"M-Delete", "\x1b\x7f", "Mega+Delete, the same key"},
 		{"C-Backspace", "\x08", "Ctrl+Backspace is where BS legitimately goes out"},
 		{"C-Delete", "\x08", "Ctrl+Delete, the same key"},
 	} {

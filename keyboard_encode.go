@@ -23,11 +23,11 @@ const (
 // together plus one, so "no modifiers" is 1.
 const (
 	ModShift = 1 << iota
-	ModAlt
+	ModMega
 	ModCtrl
 	ModSuper
 	ModHyper
-	ModMeta
+	ModMicro
 	ModCapsLock
 	ModNumLock
 )
@@ -89,13 +89,13 @@ type KeyEvent struct {
 }
 
 // legacyEncodable reports whether a key HAS an old-style encoding at all. Ctrl
-// and Alt do (a C0 control, an ESC prefix); Super, Hyper and Meta do not, so a
+// and Mega do (a C0 control, an ESC prefix); Super, Hyper and Micro do not, so a
 // key carrying one of those has to go out as CSI whatever the flags say.
 func (e KeyEvent) legacyEncodable() bool {
 	if e.Suffix != 'u' && e.Suffix != 0 {
 		return false // a functional key already has its own sequence
 	}
-	return e.Mods&(ModSuper|ModHyper|ModMeta) == 0
+	return e.Mods&(ModSuper|ModHyper|ModMicro) == 0
 }
 
 // EncodeKeyEvent renders a key event for the given enhancement flags, returning
@@ -138,7 +138,7 @@ func mustUseCSI(e KeyEvent, flags int) bool {
 	// Esc/Tab/Enter/Backspace ARE the C0 controls that Ctrl-[ , Ctrl-I, Ctrl-M
 	// and Ctrl-H produce, so both sides of each pair have to become explicit —
 	// resolving only one half would leave them just as indistinguishable.
-	return ambiguousLegacyKey(e.Code) || e.Mods&(ModCtrl|ModAlt) != 0
+	return ambiguousLegacyKey(e.Code) || e.Mods&(ModCtrl|ModMega) != 0
 }
 
 // ambiguousLegacyKey reports whether a key's legacy encoding collides with
@@ -154,7 +154,7 @@ func ambiguousLegacyKey(code rune) bool {
 }
 
 // legacyKeyBytes renders the pre-protocol encoding: the key's own bytes, a C0
-// control under Ctrl, and an ESC prefix under Alt.
+// control under Ctrl, and an ESC prefix under Mega.
 func legacyKeyBytes(e KeyEvent) []byte {
 	code := e.Code
 	if e.Shifted != 0 && e.Mods&ModShift != 0 {
@@ -172,7 +172,7 @@ func legacyKeyBytes(e KeyEvent) []byte {
 	if out == nil {
 		out = []byte(string(code))
 	}
-	if e.Mods&ModAlt != 0 {
+	if e.Mods&ModMega != 0 {
 		out = append([]byte{0x1b}, out...)
 	}
 	return out

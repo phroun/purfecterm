@@ -266,7 +266,7 @@ func unknownKeyBytes(name string) []byte {
 // direct-key-handler spells Control with a caret against the keys the caret is
 // natural for rather than with a "C-" prefix, so this is the shape Ctrl chords
 // arrive in. It is a function rather than an inline block because the caret is
-// also the BASE of every Ctrl chord that carries a further modifier: Alt+Ctrl+A
+// also the BASE of every Ctrl chord that carries a further modifier: Mega+Ctrl+A
 // arrives as "M-^A", and encodeModifiedKey needs the same answer this does.
 //
 // Note the ok result carries the meaning, not the byte: "^@" is NUL, a real
@@ -297,7 +297,7 @@ func controlByte(name string) (byte, bool) {
 }
 
 // parseModifiers extracts modifier flags and base key from a key string.
-// Returns xterm modifier code (2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, etc.) and base key.
+// Returns xterm modifier code (2=Shift, 3=Mega, 4=Shift+Mega, 5=Ctrl, etc.) and base key.
 // Returns 0 if no modifiers.
 func parseModifiers(key string) (int, string) {
 	mods := 0
@@ -308,7 +308,7 @@ func parseModifiers(key string) (int, string) {
 			mods |= 1 // Shift
 			remaining = remaining[2:]
 		} else if strings.HasPrefix(remaining, "M-") {
-			mods |= 2 // Alt/Meta
+			mods |= 2 // Mega
 			remaining = remaining[2:]
 		} else if strings.HasPrefix(remaining, "C-") {
 			mods |= 4 // Control
@@ -326,30 +326,30 @@ func parseModifiers(key string) (int, string) {
 }
 
 // encodeModifiedKey creates the escape sequence for a modified key.
-// mod is the xterm modifier code (2=Shift, 3=Alt, etc.)
+// mod is the xterm modifier code (2=Shift, 3=Mega, etc.)
 func encodeModifiedKey(mod int, baseKey string) []byte {
 	modChar := byte('0' + mod)
 
-	// The xterm modifier code is 1 + a bitmask (Shift 1, Alt 2, Ctrl 4), so the
+	// The xterm modifier code is 1 + a bitmask (Shift 1, Mega 2, Ctrl 4), so the
 	// bits have to be read out of mod-1. Testing them against mod directly made
-	// every code with the 2 bit set look like Alt — code 2 is Shift alone, and
-	// it was being encoded as Alt.
-	const modAlt = 2
-	hasAlt := (mod-1)&modAlt != 0
+	// every code with the 2 bit set look like Mega — code 2 is Shift alone, and
+	// it was being encoded as Mega.
+	const modMega = 2
+	hasMega := (mod-1)&modMega != 0
 
-	// A caret chord carrying a further modifier: "M-^A" is Alt+Ctrl+A, "S-^A" is
+	// A caret chord carrying a further modifier: "M-^A" is Mega+Ctrl+A, "S-^A" is
 	// Ctrl+Shift+A, "M-S-^A" is both. The caret already holds the Control, so
 	// what is left to encode is whatever rides alongside it.
 	//
 	// Shift has nowhere to go: an ASCII control code is five bits and has no
 	// room for it, which is why a legacy terminal sends plain ^A for
 	// Ctrl+Shift+A too. Degrading to ^A is therefore not a loss this introduces
-	// — it is what the wire has always done. Alt keeps its ESC prefix.
+	// — it is what the wire has always done. Mega keeps its ESC prefix.
 	//
 	// These arrive only under the kitty protocol, and all four of them used to
 	// fall out of this function as nil and be dropped without a trace.
 	if b, ok := controlByte(baseKey); ok {
-		if hasAlt {
+		if hasMega {
 			return []byte{0x1b, b}
 		}
 		return []byte{b}
@@ -359,9 +359,9 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	// one character in three bytes, and a byte-length test sent it here to be
 	// dropped. Ctrl and Shift do not appear in this shape — Ctrl arrives as a
 	// caret chord, handled above, and Shift is carried by the character's own
-	// case — so Alt is the only modifier there is anything to encode.
+	// case — so Mega is the only modifier there is anything to encode.
 	if r := []rune(baseKey); len(r) == 1 {
-		if hasAlt {
+		if hasMega {
 			return append([]byte{0x1b}, baseKey...)
 		}
 		return nil
@@ -383,20 +383,20 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 		return []byte{0x1b, '[', '1', ';', modChar, code}
 	}
 
-	// Tab: S-Tab is ESC [ Z, Alt+Tab is ESC + Tab byte
+	// Tab: S-Tab is ESC [ Z, Mega+Tab is ESC + Tab byte
 	if base == keyboard.KeyTab {
 		switch mod {
 		case 2: // Shift
 			return []byte{0x1b, '[', 'Z'}
-		case 3: // Alt
+		case 3: // Mega
 			return []byte{0x1b, 0x09}
-		case 4: // Shift+Alt
+		case 4: // Shift+Mega
 			return []byte{0x1b, 0x1b, '[', 'Z'} // ESC + S-Tab
 		case 5: // Ctrl
 			return []byte{0x09} // Ctrl+Tab = Tab (no standard sequence)
 		case 6: // Shift+Ctrl
 			return []byte{0x1b, '[', 'Z'} // Treat as S-Tab
-		case 7: // Alt+Ctrl
+		case 7: // Mega+Ctrl
 			return []byte{0x1b, 0x09} // ESC + Tab
 		default:
 			return []byte{0x09}
@@ -408,7 +408,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	// gives "Enter" to the keypad's. Naming the constant is what makes that
 	// history irrelevant — the branch follows the key, not the word.
 	if base == keyboard.KeyReturn {
-		if mod == 3 { // Alt+Return
+		if mod == 3 { // Mega+Return
 			return []byte{0x1b, 0x0d}
 		}
 		// Other modifier combos - just send CR
@@ -416,10 +416,10 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	}
 
 	// The keypad's Enter with modifiers: its own sequence behind an ESC for
-	// Alt, the same shape as the home-row key above. Sending CR here would put
+	// Mega, the same shape as the home-row key above. Sending CR here would put
 	// the two keys back together, which is what the split exists to prevent.
 	if base == keyboard.KeyKeypadEnter {
-		if mod == 3 { // Alt+Enter
+		if mod == 3 { // Mega+Enter
 			return []byte{0x1b, 0x1b, 'O', 'M'}
 		}
 		return []byte{0x1b, 'O', 'M'}
@@ -430,7 +430,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 	// terminal will send for its backspace, but both erase behind the cursor,
 	// so both encode the same way going out. (Forward delete is "FDel".)
 	if base == keyboard.KeyBackspace || base == keyboard.KeyDEL {
-		if mod == 3 { // Alt+Backspace
+		if mod == 3 { // Mega+Backspace
 			return []byte{0x1b, 0x7f}
 		}
 		if mod == 5 { // Ctrl+Backspace
@@ -441,7 +441,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 
 	// Escape with modifiers
 	if base == keyboard.KeyEscape {
-		if mod == 3 { // Alt+Escape
+		if mod == 3 { // Mega+Escape
 			return []byte{0x1b, 0x1b}
 		}
 		return []byte{0x1b}
@@ -462,7 +462,7 @@ func encodeModifiedKey(mod int, baseKey string) []byte {
 
 	// Space with modifiers
 	if base == keyboard.KeySpace {
-		if mod == 3 { // Alt+Space
+		if mod == 3 { // Mega+Space
 			return []byte{0x1b, ' '}
 		}
 		if mod == 5 { // Ctrl+Space
@@ -756,7 +756,7 @@ func mouseModsFromKey(key string) int {
 		mods |= purfecterm.MouseModShift
 	}
 	if strings.HasPrefix(key, "M-") || strings.Contains(key, "-M-") {
-		mods |= purfecterm.MouseModAlt
+		mods |= purfecterm.MouseModMega
 	}
 	if strings.HasPrefix(key, "C-") || strings.Contains(key, "-C-") {
 		mods |= purfecterm.MouseModControl

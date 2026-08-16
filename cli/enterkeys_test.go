@@ -93,9 +93,9 @@ func TestEnterKeysAreMappedNotTyped(t *testing.T) {
 // which reads as the terminal lacking the chord rather than as a bug.
 func TestModifiedEnterKeysStaySplitAndAudible(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
-		{"M-Return", "\x1b\r", "Alt + home-row key"},
+		{"M-Return", "\x1b\r", "Mega + home-row key"},
 		{"C-Return", "\r", "Ctrl + home-row key"},
-		{"M-Enter", "\x1b\x1bOM", "Alt + keypad key"},
+		{"M-Enter", "\x1b\x1bOM", "Mega + keypad key"},
 		{"C-Enter", "\x1bOM", "Ctrl + keypad key"},
 	} {
 		got := keyToBytes(c.key)
@@ -111,6 +111,6 @@ func TestModifiedEnterKeysStaySplitAndAudible(t *testing.T) {
 
 	// The modified pairs stay distinct too.
 	if bytes.Equal(keyToBytes("M-Return"), keyToBytes("M-Enter")) {
-		t.Error("Alt on the two Enter keys encodes identically")
+		t.Error("Mega on the two Enter keys encodes identically")
 	}
 }

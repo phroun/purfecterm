@@ -2949,7 +2949,7 @@ func qtMouseModifiers(modifiers qt.KeyboardModifier) int {
 		mods |= purfecterm.MouseModShift
 	}
 	if modifiers&qt.AltModifier != 0 {
-		mods |= purfecterm.MouseModAlt
+		mods |= purfecterm.MouseModMega
 	}
 	if modifiers&qt.ControlModifier != 0 {
 		mods |= purfecterm.MouseModControl

@@ -7,7 +7,7 @@ import (
 // A control chord carrying a further modifier encodes, rather than vanishing.
 //
 // direct-key-handler spells Control with a caret against the keys the caret
-// suits, so Ctrl+Shift+A is "S-^A" and Alt+Ctrl+A is "M-^A" — the caret holds
+// suits, so Ctrl+Shift+A is "S-^A" and Mega+Ctrl+A is "M-^A" — the caret holds
 // the Control and the prefixes hold the rest. encodeModifiedKey had no branch
 // for a caret base: it fell past every table, returned nil, and keyToBytes then
 // returned nil too because the name contains a "-". The keystroke went nowhere,
@@ -24,11 +24,11 @@ import (
 // real today and is not permanent.
 func TestControlChordsWithAModifierAreEncoded(t *testing.T) {
 	for _, c := range []struct{ key, want, what string }{
-		{"M-^A", "\x1b\x01", "Alt+Ctrl+A: ESC before the control code"},
+		{"M-^A", "\x1b\x01", "Mega+Ctrl+A: ESC before the control code"},
 		{"S-^A", "\x01", "Ctrl+Shift+A: Shift has nowhere to go on the wire"},
-		{"M-S-^A", "\x1b\x01", "Alt+Ctrl+Shift+A: Alt survives, Shift does not"},
-		{"M-^[", "\x1b\x1b", "Alt+Ctrl+[, whose control code is ESC itself"},
-		{"M-^@", "\x1b\x00", "Alt+Ctrl+@: NUL is a real encoding whose byte is zero"},
+		{"M-S-^A", "\x1b\x01", "Mega+Ctrl+Shift+A: Mega survives, Shift does not"},
+		{"M-^[", "\x1b\x1b", "Mega+Ctrl+[, whose control code is ESC itself"},
+		{"M-^@", "\x1b\x00", "Mega+Ctrl+@: NUL is a real encoding whose byte is zero"},
 	} {
 		got := keyToBytes(c.key)
 		if got == nil {
@@ -52,7 +52,7 @@ func TestControlChordsWithAModifierAreEncoded(t *testing.T) {
 	}
 }
 
-// Alt+Ctrl+A survives the trip out and back as itself, which is the strongest
+// Mega+Ctrl+A survives the trip out and back as itself, which is the strongest
 // statement available about the branch above: the bytes are not merely
 // non-empty, they name the chord that produced them.
 //
@@ -65,19 +65,19 @@ func TestControlChordsWithAModifierAreEncoded(t *testing.T) {
 //	Both are what a terminal sends; direct-key-handler's legacy path just does
 //	not reassemble ESC-prefixed forms in those two shapes. A guest that does is
 //	unaffected, so this is a limit of the decoder, not of the encoding.
-func TestAltControlChordRoundTrips(t *testing.T) {
+func TestMegaControlChordRoundTrips(t *testing.T) {
 	out := keyToBytes("M-^A")
 	if got := decodeBack(t, out); len(got) != 1 || got[0] != "M-^A" {
 		t.Errorf("M-^A encoded %q, which decodes as %v, want [M-^A]", string(out), got)
 	}
 }
 
-// Alt with a character outside ASCII encodes, rather than vanishing.
+// Mega with a character outside ASCII encodes, rather than vanishing.
 //
 // The branch guarded on len(baseKey) == 1 in BYTES, so "M-€" — one character in
 // three bytes — missed it and was dropped. Runes are the unit a keystroke is
 // counted in.
-func TestAltWithAMultiByteCharacter(t *testing.T) {
+func TestMegaWithAMultiByteCharacter(t *testing.T) {
 	for _, c := range []struct{ key, want string }{
 		{"M-€", "\x1b€"},
 		{"M-é", "\x1bé"},
@@ -94,28 +94,28 @@ func TestAltWithAMultiByteCharacter(t *testing.T) {
 	}
 }
 
-// The Alt bit is read out of the bitmask, not out of the xterm code.
+// The Mega bit is read out of the bitmask, not out of the xterm code.
 //
-// An xterm modifier code is 1 + (Shift 1 | Alt 2 | Ctrl 4). The old test was
-// mod&2, which is the Alt bit only before the +1: code 2 is Shift alone and
-// answered "has Alt", so a Shift-modified character was encoded as an Alt one.
+// An xterm modifier code is 1 + (Shift 1 | Mega 2 | Ctrl 4). The old test was
+// mod&2, which is the Mega bit only before the +1: code 2 is Shift alone and
+// answered "has Mega", so a Shift-modified character was encoded as a Mega one.
 //
 // Nothing reaches this today — direct-key-handler carries Shift in a
 // character's own case and never sends "S-a" — so this asserts against
 // encodeModifiedKey directly rather than pretending the name arrives.
-func TestAltBitComesFromTheModifierBitmask(t *testing.T) {
+func TestMegaBitComesFromTheModifierBitmask(t *testing.T) {
 	for _, c := range []struct {
 		mod  int
 		want string
 		what string
 	}{
-		{2, "", "Shift alone: not Alt, and there is nothing else to send"},
-		{3, "\x1ba", "Alt alone"},
-		{4, "\x1ba", "Shift+Alt"},
+		{2, "", "Shift alone: not Mega, and there is nothing else to send"},
+		{3, "\x1ba", "Mega alone"},
+		{4, "\x1ba", "Shift+Mega"},
 		{5, "", "Ctrl alone: arrives as a caret chord instead, never here"},
 		{6, "", "Shift+Ctrl: likewise"},
-		{7, "\x1ba", "Alt+Ctrl"},
-		{8, "\x1ba", "Shift+Alt+Ctrl"},
+		{7, "\x1ba", "Mega+Ctrl"},
+		{8, "\x1ba", "Shift+Mega+Ctrl"},
 	} {
 		got := encodeModifiedKey(c.mod, "a")
 		if c.want == "" {
@@ -132,7 +132,7 @@ func TestAltBitComesFromTheModifierBitmask(t *testing.T) {
 
 // No key name encodes to nothing.
 //
-// This is the invariant the rest of this file is a special case of. Whatever a
+// This is the rule the rest of this file is a special case of. Whatever a
 // key name is — a chord this encoder cannot build, an event it cannot express,
 // a modifier prefix it does not parse, a key from a protocol level it does not
 // speak — it produces bytes, and if there is no encoding those bytes are the
@@ -153,7 +153,7 @@ func TestNoKeyNameEncodesToNothing(t *testing.T) {
 		"a:Release",  // a key coming up
 		"S-:Left",    // which of a paired modifier key it was
 		"s-a",        // Super, a prefix parseModifiers does not read
-		"m-a",        // Meta proper, likewise
+		"m-a",        // Micro, likewise
 		"G-abc",      // a glyph chord with no single-rune payload
 		"^AB",        // a caret name that is not a control chord
 		"F13",        // a plain key with no encoding
