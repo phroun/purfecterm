@@ -149,9 +149,6 @@ func TestNoKeyNameEncodesToNothing(t *testing.T) {
 		"C-Nonsense", // a modified chord with no encoding
 		"M-F13",      // a modified function key this encoder lacks
 		"C-CapsLock", // a modified lock key
-		"M-a:Repeat", // a modified auto-repeat
-		"a:Release",  // a key coming up
-		"S-:Left",    // which of a paired modifier key it was
 		"s-a",        // Super, a prefix parseModifiers does not read
 		"m-a",        // Micro, likewise
 		"G-abc",      // a glyph chord with no single-rune payload
@@ -166,37 +163,41 @@ func TestNoKeyNameEncodesToNothing(t *testing.T) {
 	}
 }
 
-// A name carrying an event suffix has no encoding here, and that is an
-// UNIMPLEMENTED FEATURE, not a decision this encoder gets to make.
+// On the legacy path a REPEAT is the press it has always been, and a release is
+// nothing at all.
 //
-// The kitty keyboard protocol expresses key release and repeat, purfecterm
-// negotiates it — keyboard_protocol.go tracks KeyboardReportEvents per screen,
-// with a push stack and a query reply — and a child that has asked for those
-// events is entitled to receive them. This encoder never consults
-// Buffer.KeyboardFlags(), so it cannot honour the request, and the same is true
-// of every other negotiated flag: disambiguation, alternate keys, all-keys,
-// associated text. It emits legacy sequences and one CSI-u form (the G- glyph).
+// The two differ because a repeat has a legacy form and a release does not. A
+// held key on a terminal that never heard of this protocol arrives as another
+// press, so that is what a guest which negotiated nothing must receive —
+// sending it nothing instead makes a held key stop dead after its first press,
+// which is what this used to assert. A release has no such fallback: there is
+// no legacy way to say "came up", and one delivered to a guest that cannot read
+// it looks like the keystroke arriving twice.
 //
-// So a suffixed name lands on the unknown-key path and goes out bracketed,
-// which is what that path is for: it says this encoder has no answer, visibly,
-// rather than dropping the event and looking like it decided something.
+// Neither answer is a judgement that a release is not a key. The release is
+// real and expressible: cli/keyboard_kitty.go writes it, and a guest that
+// pushed KeyboardReportEvents receives it. Control reaches keyToBytes only when
+// the kitty path declined, and the protocol's rule for declining is this.
 //
-// This test exists to hold that line. If it starts failing because the flags
-// are now honoured, the right change is to assert the CSI-u encoding — not to
-// restore a suppression.
-func TestEventSuffixesHaveNoEncodingYet(t *testing.T) {
-	for _, key := range []string{
-		"a:Release", "Return:Release", "a:Repeat",
-		"M-a:Repeat", // the modified form, which used to vanish silently
-		"S-:Left",    // a modifier key's side, likewise
+// Bracketing them, which this file asserted before that, sent the guest
+// "<a:Release>" as literal text on every key it let go.
+func TestLegacyPathRepeatsPressesAndDropsReleases(t *testing.T) {
+	for _, tc := range []struct{ key, want string }{
+		{"a:Repeat", "a"},
+		{"M-a:Repeat", "\x1ba"},
+		{"Up:Repeat", "\x1b[A"},
+		{"Return:Repeat", "\r"},
 	} {
-		got := keyToBytes(key)
-		if got == nil {
-			t.Errorf("%s: dropped silently; an unencoded event must stay visible", key)
-			continue
+		if got := string(keyToBytes(tc.key)); got != tc.want {
+			t.Errorf("%s produced %q on the legacy path, want %q — a held key must "+
+				"keep repeating for a guest that cannot read event types",
+				tc.key, got, tc.want)
 		}
-		if want := string(unknownKeyBytes(key)); string(got) != want {
-			t.Errorf("%s = %q, want %q", key, string(got), want)
+	}
+	for _, key := range []string{"a:Release", "Return:Release", "S-:Left"} {
+		if got := keyToBytes(key); got != nil {
+			t.Errorf("%s produced %q on the legacy path; a guest that negotiated "+
+				"no event reporting must receive nothing", key, string(got))
 		}
 	}
 }

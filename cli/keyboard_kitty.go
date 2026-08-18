@@ -27,15 +27,31 @@ var eventSuffixes = map[string]int{
 	":Repeat":  purfecterm.KeyRepeat,
 }
 
-// splitEventSuffix separates a trailing event marker from the name it
-// decorates, returning the press type when there is none.
-func splitEventSuffix(key string) (base string, eventType int) {
+// sideSuffixes mark WHICH of a paired modifier key an event came from, as in
+// "M-Press:Left". They are not event types — they decorate a modifier key's own
+// press or release, which only KeyboardReportAllKeys carries — but they mark a
+// name as something other than a plain keystroke just as the event markers do.
+var sideSuffixes = []string{":Left", ":Right"}
+
+// splitEventSuffix separates a trailing event or side marker from the name it
+// decorates. With no marker the base is the whole name and the event is a
+// press, which is what an undecorated name means.
+//
+// The third result is what keyToBytes needs: whether there WAS a marker, which
+// a press type alone cannot answer, and which is true for the side markers even
+// though they carry no event type.
+func splitEventSuffix(key string) (base string, eventType int, suffixed bool) {
 	for suffix, typ := range eventSuffixes {
 		if strings.HasSuffix(key, suffix) {
-			return key[:len(key)-len(suffix)], typ
+			return key[:len(key)-len(suffix)], typ, true
 		}
 	}
-	return key, purfecterm.KeyPress
+	for _, suffix := range sideSuffixes {
+		if strings.HasSuffix(key, suffix) {
+			return key[:len(key)-len(suffix)], purfecterm.KeyPress, true
+		}
+	}
+	return key, purfecterm.KeyPress, false
 }
 
 // prefixMods maps this vocabulary's modifier prefixes to the protocol's bits.
@@ -175,7 +191,7 @@ func encodeKittyKeyName(key string, flags int) []byte {
 	if flags == 0 {
 		return nil
 	}
-	base, eventType := splitEventSuffix(key)
+	base, eventType, _ := splitEventSuffix(key)
 	mods, base := splitKittyMods(base)
 	if base == "" {
 		return nil
