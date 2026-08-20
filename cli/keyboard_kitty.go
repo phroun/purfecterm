@@ -136,6 +136,93 @@ var kittyFunctionalKeys = map[keyboard.Key]struct {
 	keyboard.KeyF12: {purfecterm.KeyF12, '~'},
 }
 
+// kittyModifierKeys maps a bare modifier event's letter — the letter that
+// modifier's own prefix uses — to the keycodes the protocol assigns its left
+// and right cap.
+//
+// These are a separate table from kittyFunctionalKeys because they are keyed by
+// a different thing: a modifier reporting itself is not a Key with a name, it is
+// a side and a modifier, and direct-key-handler spells it that way — "LMod:S" is
+// the left Shift going down, "RMod:C" the right Control, with ":Release"
+// trailing when the cap comes up.
+var kittyModifierKeys = map[string]struct{ left, right rune }{
+	"S": {57441, 57447},
+	"C": {57442, 57448},
+	"M": {57443, 57449},
+	"s": {57444, 57450},
+	"H": {57445, 57451},
+	"m": {57446, 57452},
+}
+
+// bareModifierSides are the shapes such a name comes in, and which cap each one
+// means.
+//
+// The sideless "Mod:" is a producer saying it cannot tell the two apart, or a
+// modifier that has only one key. The protocol has no third code for that — it
+// numbers the left cap and the right cap and nothing in between — so it goes out
+// as the left one. That is a choice, and the reason it is the right one is that
+// the guest's alternative is hearing nothing at all: a modifier it never saw go
+// down is a modifier it thinks is still up. Naming the wrong cap costs a guest
+// that distinguishes them, and the left cap is the one that exists on every
+// keyboard that has the modifier at all.
+var bareModifierSides = []struct {
+	prefix string
+	right  bool
+}{
+	{"LMod:", false},
+	{"RMod:", true},
+	{"Mod:", false},
+}
+
+// bareModifierCode answers the keycode a modifier reports ITSELF under, and —
+// separately — whether the name is one of these events at all.
+//
+// The two results are separate because they can disagree: a name in this shape
+// whose letter this package does not know is still one of these events, and has
+// no code. What that must NOT do is fall through to the legacy encoder, which
+// has no encoding for a modifier either and would send the guest the name as
+// literal text.
+func bareModifierCode(name string) (code rune, isModifier bool) {
+	for _, s := range bareModifierSides {
+		letter, found := strings.CutPrefix(name, s.prefix)
+		if !found {
+			continue
+		}
+		codes, known := kittyModifierKeys[letter]
+		switch {
+		case !known:
+			return 0, true
+		case s.right:
+			return codes.right, true
+		default:
+			return codes.left, true
+		}
+	}
+	return 0, false
+}
+
+// encodeBareModifier renders a modifier key reporting itself.
+//
+// Only a guest that negotiated KeyboardReportAllKeys receives these. That is the
+// protocol's own rule — the modifier keys are reported under that flag and under
+// no other — and it is also the only way it could work: a guest that asked for
+// less has no reason to expect codepoint 57441 and would read it as text from
+// the private use area.
+//
+// No modifier bits ride along. The name carries none: "LMod:S" says which cap
+// moved and nothing about what else was held at the time, so a modifier set here
+// would be invented rather than reported.
+func encodeBareModifier(code rune, eventType, flags int) []byte {
+	if code == 0 || flags&purfecterm.KeyboardReportAllKeys == 0 {
+		return nil
+	}
+	return purfecterm.EncodeKeyEvent(purfecterm.KeyEvent{
+		Code:      code,
+		EventType: eventType,
+		Suffix:    'u',
+	}, flags)
+}
+
 // kittyKeyName resolves a base name to the protocol's codepoint and suffix,
 // folding in any modifier the name itself carries.
 //
@@ -192,6 +279,12 @@ func encodeKittyKeyName(key string, flags int) []byte {
 		return nil
 	}
 	base, eventType, _ := splitEventSuffix(key)
+	// A modifier reporting itself is settled here, before the prefix peel and
+	// the name tables: its name is not a base key with modifiers written in
+	// front of it, and neither of those steps would recognise it.
+	if code, isModifier := bareModifierCode(base); isModifier {
+		return encodeBareModifier(code, eventType, flags)
+	}
 	mods, base := splitKittyMods(base)
 	if base == "" {
 		return nil

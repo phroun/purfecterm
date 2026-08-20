@@ -213,6 +213,20 @@ func keyToBytes(key string) []byte {
 	// So the silence is the negotiation being honoured, one layer down from
 	// where EncodeKeyEvent already enforces it. Falling through instead sent
 	// the guest "<a:Release>" as literal text on every key it let go.
+	// A modifier reporting ITSELF — "LMod:S", the left Shift cap going down —
+	// gets no bytes here, and unlike the cases below there is no flag that would
+	// change that. The legacy wire says what a key PRODUCED, and a modifier held
+	// on its own produces nothing; encodeKittyKeyName writes it for a guest that
+	// negotiated KeyboardReportAllKeys, and there is no older form for it to
+	// fall back to.
+	//
+	// Falling through instead reached unknownKeyBytes, which sent the guest
+	// "<LMod:S>" — literal text, on every touch of a modifier — and an editor on
+	// the far side inserted it.
+	if _, isModifier := bareModifierCode(key); isModifier {
+		return nil
+	}
+
 	if base, eventType, suffixed := splitEventSuffix(key); suffixed {
 		if eventType == purfecterm.KeyRepeat {
 			return keyToBytes(base)
