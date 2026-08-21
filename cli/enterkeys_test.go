@@ -46,9 +46,14 @@ func decodeBack(t *testing.T, raw []byte) []string {
 // treats the keypad as being in application mode always, so the distinction
 // wins over the mode.
 func TestEnterKeysRoundTripAsTwoKeys(t *testing.T) {
+	// The keypad's key wears the pad prefix now — "P-Enter" — because the pad
+	// duplicates keys that exist elsewhere and the prefix says which was
+	// struck. Both spellings encode: the prefixed one is what arrives today,
+	// and the bare one is still what the key table calls it.
 	for _, c := range []struct{ key, want string }{
 		{"Return", "Return"},
-		{"Enter", "Enter"},
+		{"Enter", "P-Enter"},
+		{"P-Enter", "P-Enter"},
 	} {
 		out := keyToBytes(c.key)
 		if out == nil {
