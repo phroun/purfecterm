@@ -23,7 +23,7 @@ import (
 // somehow not keys.
 var unencodable = map[keyboard.Key]bool{
 	keyboard.KeyCapsLock:    true,
-	keyboard.KeyNumLock:     true,
+	keyboard.KeyClear:       true,
 	keyboard.KeyScrollLock:  true,
 	keyboard.KeyPrintScreen: true,
 	keyboard.KeyPause:       true,
@@ -37,6 +37,28 @@ var unencodable = map[keyboard.Key]bool{
 	keyboard.KeyF18: true,
 	keyboard.KeyF19: true,
 	keyboard.KeyF20: true,
+
+	// The input-method and international caps, which direct-key-handler names
+	// and the legacy wire has no sequence for at all. Henkan and Muhenkan
+	// (convert / no-convert) and the Hangul and Kana locks drive an input
+	// method on the machine the KEYBOARD is attached to, and there has never
+	// been a byte for saying so down a terminal line. Ro and Yen are the two
+	// extra caps a JIS board carries; a terminal sends whatever character the
+	// layout puts on them, which is not this key being reported.
+	//
+	// Begin is the DEC pad's centre cap, Power is a system key, and Zig and Zag
+	// are shapes no terminal has an encoding for either.
+	keyboard.KeyBegin:      true,
+	keyboard.KeyHangulLock: true,
+	keyboard.KeyHanja:      true,
+	keyboard.KeyHenkan:     true,
+	keyboard.KeyKanaLock:   true,
+	keyboard.KeyMuhenkan:   true,
+	keyboard.KeyPower:      true,
+	keyboard.KeyRo:         true,
+	keyboard.KeyYen:        true,
+	keyboard.KeyZag:        true,
+	keyboard.KeyZig:        true,
 }
 
 // Every key direct-key-handler can emit is either encoded here or listed as
@@ -109,9 +131,22 @@ func TestEncodedKeysRoundTripToTheSameKey(t *testing.T) {
 			continue
 		}
 		got := decodeBack(t, b)
-		if len(got) != 1 || got[0] != k.DefaultName() {
+		// A keypad key comes back wearing its "P-" prefix, and that is not a
+		// failed round trip. The prefix says WHICH of two duplicate keys was
+		// struck, and the legacy wire has no way to carry that — a terminal
+		// sends one encoding for the character wherever it sits. keyToBytes
+		// takes the prefix off for the same reason, so the pair is consistent:
+		// what goes out is the twin's bytes, and what comes back is the pad's
+		// name for them.
+		name := k.DefaultName()
+		if len(got) == 1 {
+			if bare, isPad := stripPadPrefix(got[0]); isPad {
+				got[0] = bare
+			}
+		}
+		if len(got) != 1 || got[0] != name {
 			t.Errorf("%v encodes %q, which decodes as %v, want [%s]",
-				k, string(b), got, k.DefaultName())
+				k, string(b), got, name)
 		}
 	}
 }

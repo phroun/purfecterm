@@ -227,6 +227,26 @@ func keyToBytes(key string) []byte {
 		return nil
 	}
 
+	// TEXT WITH NO KEY BEHIND IT goes out as itself. An input method's commit
+	// is text and nothing else: there is no key to name, no modifier to write
+	// in front of it, and nothing older to fall back to but the characters.
+	//
+	// Which is what a guest that negotiated nothing has always been sent for
+	// typed text, so it arrives correctly at one that never heard of the
+	// protocol. A guest that CAN read the protocol's own form is served by
+	// encodeKittyKeyName, which spells this as keycode 0 and declines here only
+	// when the guest did not ask for associated text.
+	//
+	// Settled ahead of the event suffix because the payload is arbitrary text
+	// with no key in it to have been repeated or released. Falling through
+	// instead reached unknownKeyBytes, which put "<Text:ö>" in the document.
+	if payload, isText := strings.CutPrefix(key, keyboard.TextPrefix); isText {
+		if payload == "" {
+			return nil
+		}
+		return []byte(payload)
+	}
+
 	if base, eventType, suffixed := splitEventSuffix(key); suffixed {
 		if eventType == purfecterm.KeyRepeat {
 			return keyToBytes(base)
@@ -242,6 +262,24 @@ func keyToBytes(key string) []byte {
 	// nowhere.
 	if bytes, ok := keyBytes[keyByName[key]]; ok {
 		return bytes
+	}
+
+	// A KEYPAD key sends what its twin on the main keyboard sends.
+	//
+	// The pad duplicates keys that exist elsewhere, and direct-key-handler says
+	// WHICH of the two was struck with a "P-" or "p-" prefix rather than a
+	// second name for every one. The legacy wire has no such distinction to
+	// pass on — a terminal sends the same bytes for the pad's 7 as for the row
+	// one — so the prefix comes off and the twin's encoding stands.
+	//
+	// The pad's Enter is the exception and is spelled out in keyBytes above,
+	// where it keeps SS3 M; it is reached before this and never gets here.
+	//
+	// Until this, every pad key fell through to unknownKeyBytes: pressing the
+	// keypad 7 in a guest put "<P-7>" in its document. The names arrived with
+	// the vocabulary this encoder reads, and nothing here had been taught them.
+	if pad, ok := stripPadPrefix(key); ok {
+		return keyToBytes(pad)
 	}
 
 	// Single character keys (including "-", "+", "=", etc.) - handle before modifier checks
@@ -315,6 +353,23 @@ func keyToBytes(key string) []byte {
 // without restating the bracketing and drifting from it.
 func unknownKeyBytes(name string) []byte {
 	return []byte("<" + name + ">")
+}
+
+// stripPadPrefix takes the keypad marker off a name, so the key can be encoded
+// as the twin it duplicates.
+//
+// Both cases are the pad. The lowercase form exists for the pad characters that
+// exist TWICE — two different pads, an LK201 descendant and a PC-98 — so
+// neither can own the character outright and they split by case, the way Mega
+// and Micro do. Neither distinction survives the legacy wire, which has one
+// encoding for the character and nothing to say about where it was struck.
+func stripPadPrefix(name string) (string, bool) {
+	for _, p := range []string{"P-", "p-"} {
+		if rest, ok := strings.CutPrefix(name, p); ok && rest != "" {
+			return rest, true
+		}
+	}
+	return "", false
 }
 
 // controlByte answers the ASCII control code a caret chord names — "^A" is 1,

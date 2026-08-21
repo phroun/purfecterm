@@ -278,6 +278,31 @@ func encodeKittyKeyName(key string, flags int) []byte {
 	if flags == 0 {
 		return nil
 	}
+
+	// TEXT WITH NO KEY BEHIND IT — what an input method commits, and what
+	// direct-key-handler marks with the "Text:" prefix. The protocol has a form
+	// for exactly this: keycode 0, which it defines as "no known key is
+	// associated with the text".
+	//
+	// Settled before the event suffix is peeled, because the payload is
+	// arbitrary text and there is no key in it to have been repeated or
+	// released. A commit that happened to contain ":Release" would otherwise be
+	// read as a name wearing a marker and be truncated to its own prefix.
+	//
+	// A guest that did not ask for associated text gets nothing from this form
+	// — keycode 0 with no text section says nothing at all — so it falls
+	// through to the legacy encoder, which sends the runes as themselves. That
+	// is the one thing every guest since the beginning understands.
+	if payload, isText := strings.CutPrefix(key, keyboard.TextPrefix); isText {
+		if flags&purfecterm.KeyboardReportText == 0 || payload == "" {
+			return nil
+		}
+		return purfecterm.EncodeKeyEvent(purfecterm.KeyEvent{
+			Suffix: 'u',
+			Text:   payload,
+		}, flags)
+	}
+
 	base, eventType, _ := splitEventSuffix(key)
 	// A modifier reporting itself is settled here, before the prefix peel and
 	// the name tables: its name is not a base key with modifiers written in
